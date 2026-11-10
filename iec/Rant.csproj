@@ -88,6 +88,11 @@
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 
+  <!-- The folders Engineer's sidebar shows the blocks and Rant Math's calls in. -->
+  <Target Name="LibraryDescription" BeforeTargets="BeforeBuild">
+    <Exec Command="python &quot;$(MSBuildProjectDirectory)\..\tools\library_description.py&quot; &quot;$(MathSource)&quot; &quot;$(MSBuildProjectDirectory)\ProjectItems\LibraryDescription.xml&quot;" />
+  </Target>
+
   <!--Disable fast-up-to-date-check to execute the AfterBuild-Steps again when they have been failed before-->
   <PropertyGroup>
     <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>

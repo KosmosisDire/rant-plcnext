@@ -14,6 +14,9 @@ plcx build
 - Rant Math comes from `../math-rant` (`-D CPM_math_SOURCE:PATH=<tree>`), and the C# part
   takes its functions from `bindings/plcnext/RantMath.cs` there (`MathSource`).
 - plcx needs Visual Studio's MSBuild, or `PLCX_MSBUILD` naming it.
+- `tools/library_description.py` writes the folders Engineer's sidebar shows: a folder per
+  block family, and Rant Math's calls by the folders its `bindings/plcnext/RantMath.json` names.
+  The build runs it, so Python must be on PATH.
 
 ## Use it in a project
 
