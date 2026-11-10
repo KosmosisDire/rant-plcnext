@@ -27,8 +27,9 @@ Includes are relative to `src/`. `plc/` and `core/` know nothing of the files ab
 ## One node
 
 Every block and the mirror share one node, which `blocks/runtime` opens on a thread of its
-own (`rant_blocks`) half a second after the first block runs. A block's call only copies
-under a lock and never waits on the network.
+own (`rant_blocks`) half a second after the first block runs. A block's call finds its entity
+without a lock and only tries the entity's lock: when the node thread holds it, the call
+changes nothing and the block tries again next cycle. So a PLC task never waits on the node.
 
 - A block gives its entity up when its name or kind changes. The node thread frees it, so it
   counts for no slot. The eCLR has no hook for a removed block instance, so a deleted block
