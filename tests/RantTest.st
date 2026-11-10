@@ -59,6 +59,10 @@ VAR
     orphan : RemoteVariable;
     orphan_text : STRING;
     seen_orphan : Publisher;
+    switch_topic : STRING;
+    switcher : Publisher;
+    switch_text : STRING;
+    seen_switch : Publisher;
     log_go : BOOL;
     log_go_def : VariableDefinition;
     log_line : LogLine;
@@ -193,6 +197,16 @@ orphan_value := cycles;
 orphan(Name := STRING#'RantTest/NoOwner', Value := orphan_value);
 orphan_text := orphan.ErrorText;
 seen_orphan(Topic := STRING#'RantTest/OrphanText', Value := orphan_text);
+
+(* A topic switched after the node opened is refused, and the block keeps its first one. *)
+IF cycles > DINT#50 THEN
+    switch_topic := STRING#'RantTest/SwitchB';
+ELSE
+    switch_topic := STRING#'RantTest/SwitchA';
+END_IF;
+switcher(Topic := switch_topic, Value := cycles);
+switch_text := switcher.ErrorText;
+seen_switch(Topic := STRING#'RantTest/SwitchText', Value := switch_text);
 
 (* Log: one line on each rising edge of the PC's LogGo. *)
 log_go_def(Name := STRING#'RantTest/LogGo', Value := log_go);

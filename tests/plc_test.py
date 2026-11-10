@@ -31,7 +31,8 @@ for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("Rant
                      ("RantTest/BadError", "bool"), ("RantTest/BadText", "string"),
                      ("RantTest/FailsText", "string"), ("RantTest/SleepText", "string"),
                      ("RantTest/SleepBusy", "bool"), ("RantTest/OtherNode", "string"),
-                     ("RantTest/OrphanText", "string"), ("RantTest/AlarmCleared", "i32")]:
+                     ("RantTest/OrphanText", "string"), ("RantTest/AlarmCleared", "i32"),
+                     ("RantTest/SwitchA", "i32"), ("RantTest/SwitchB", "i32"), ("RantTest/SwitchText", "string")]:
     node.subscriber(name, schema, keep(name), reliable=True, catch_up=1)
 
 # The schema the PLC's Sample block walks to: named by the IEC type, fields as the IEC names, a
@@ -249,6 +250,15 @@ check("FunctionDefinition, the waiting call is answered next", bool(waiting_resu
 with lock:
     orphan = list(seen.get("RantTest/OrphanText", []))
 check("RemoteVariable, a write with no owner sets Error", any("no owner" in t for t in orphan), orphan[-3:])
+
+# A topic is fixed once the node opens: the switched block keeps publishing on its first one.
+with lock:
+    switch_a = list(seen.get("RantTest/SwitchA", []))
+    switch_b = list(seen.get("RantTest/SwitchB", []))
+    switch_text = list(seen.get("RantTest/SwitchText", []))
+check("Publisher, a topic switched after the node opened sets Error and keeps the first",
+      any("fixed" in t for t in switch_text) and not switch_b and switch_a[-1:] and switch_a[-1] > 50,
+      f"text {switch_text[-1:]}, A {switch_a[-1:]}, B {switch_b[-1:]}")
 
 # Log: a rising Execute sends one line at its level.
 log_go.set(True)
