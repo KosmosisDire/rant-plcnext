@@ -35,7 +35,7 @@ bool Report(const char* why, size_t length, pcoslib::IecString80* text)
 Int32 __PInvoke__ Rant::Runtime::Configure(Int32* p0, pcoslib::IecString80* p1, Int32 p2, pcoslib::IecString80* p3)
 {
     int owner = p0 ? *p0 : 0;
-    const int peers = blocks::Configure(owner, Chars80(p1), Length80(p1), p2);
+    const int peers = blocks::Configure(owner, Chars80(p1), Length80(p1), p2, p3 && p3->GetLength() != 0);
     if (p0) *p0 = owner;
     static const char why[] = "another Node block names the node";
     // The text is written only when it changes, so a block running fine copies nothing.
@@ -104,7 +104,9 @@ Int32 __PInvoke__ Rant::Runtime::Call(Int32 p0, Boolean p1, Boolean p2, UIntPtr 
 Boolean __PInvoke__ Rant::Runtime::Failed(Int32 p0, pcoslib::IecString80* p1)
 {
     char why[TEXT_MAX];
-    return Report(why, blocks::Failure(p0, why, TEXT_MAX), p1);
+    const size_t length = blocks::Failure(p0, why, TEXT_MAX);
+    if (length == blocks::FAILURE_UNCHANGED) return p1 && p1->GetLength() != 0;
+    return Report(why, length, p1);
 }
 
 Int32 __PInvoke__ Rant::Runtime::Mirror(pcoslib::IecString80* p0, Boolean p1, Boolean p2, Int32 p3)
@@ -127,7 +129,9 @@ Int32 __PInvoke__ Rant::Runtime::Mirror(pcoslib::IecString80* p0, Boolean p1, Bo
 Boolean __PInvoke__ Rant::Runtime::MirrorFailed(pcoslib::IecString80* p0)
 {
     char why[TEXT_MAX];
-    return Report(why, plc::MirrorFailure(why, TEXT_MAX), p0);
+    const size_t length = plc::MirrorFailure(why, TEXT_MAX);
+    if (length == blocks::FAILURE_UNCHANGED) return p0 && p0->GetLength() != 0;
+    return Report(why, length, p0);
 }
 
 Rant::Runtime::Runtime()

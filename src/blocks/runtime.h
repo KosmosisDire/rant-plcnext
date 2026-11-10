@@ -1,6 +1,7 @@
 #pragma once
 // The runtime behind the blocks: one node on a thread of its own, and an entity per block.
-// Every call comes from a PLC task through iec/Runtime.cs and returns without waiting on the node.
+// Every call comes from a PLC task through iec/Runtime.cs and never waits: when the node thread
+// holds what a call needs, the call changes nothing and the block tries again next cycle.
 
 #include <cstddef>
 #include <cstdint>
@@ -18,8 +19,9 @@ enum class Kind : int {
 };
 
 // The node's name and domain, reopening it when either changes. Returns the peers it sees, or -1
-// when another Node block names it otherwise. owner starts at 0 and the first call sets it.
-int Configure(int& owner, const char* name, size_t length, int domain);
+// when another Node block names it otherwise, as it did last call while it cannot tell (refused).
+// owner starts at 0 and a call sets it.
+int Configure(int& owner, const char* name, size_t length, int domain, bool refused);
 
 // The entity of kind named name: handle while both still match, else a new one, 0 on failure.
 int Entity(int kind, int handle, const char* name, size_t length);
@@ -53,6 +55,9 @@ int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLen
 
 // The same values as Kind.Serve* in iec/Runtime.cs.
 constexpr int SERVE_NEW = 1, SERVE_HELD = 2, SERVE_CANCEL = 4;
+
+// What Failure and plc::MirrorFailure return while the reason cannot be read this cycle.
+constexpr size_t FAILURE_UNCHANGED = static_cast<size_t>(-1);
 
 // Copies why the entity cannot work into out, cut at capacity. Returns its length, 0 when it can.
 size_t Failure(int handle, char* out, size_t capacity);

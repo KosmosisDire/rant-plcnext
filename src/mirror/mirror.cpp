@@ -341,8 +341,9 @@ int Mirror(const Config& cfg)
     State& s = M();
     bool changed;
     {
-        std::lock_guard<std::mutex> g(s.mu);
-        changed = s.wanted != cfg;
+        // The task never waits on the mirror thread: a busy cycle compares again on the next.
+        std::unique_lock<std::mutex> g(s.mu, std::try_to_lock);
+        changed = g.owns_lock() && s.wanted != cfg;
         if (changed) {
             s.wanted = cfg;
             ++s.gen;
@@ -360,7 +361,8 @@ int Mirror(const Config& cfg)
 size_t MirrorFailure(char* out, size_t capacity)
 {
     State& s = M();
-    std::lock_guard<std::mutex> g(s.mu);
+    std::unique_lock<std::mutex> g(s.mu, std::try_to_lock);
+    if (!g.owns_lock()) return blocks::FAILURE_UNCHANGED;
     const size_t length = s.failure.size() < capacity ? s.failure.size() : capacity;
     if (length) std::memcpy(out, s.failure.data(), length);
     return length;
