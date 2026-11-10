@@ -17,7 +17,6 @@ cup(Topic := 'Golf/CupFull', Value := cup_full);
 END_PROGRAM
 ```
 
-`plcx build` makes the library for every controller `plcnext.proj` declares, and
-`rant install plcnext --from .` puts it in PLCnext Engineer's user libraries. docs/blocks.md
-lists the blocks, the Mirror block among them, which publishes every PLC variable, and Rant
-Math's functions on the standard types.
+- Blocks for topics, functions, variables and tasks, a Mirror block, and Rant Math's functions.
+- Build with `plcx build`, install with `rant install plcnext --from .`.
+- docs/blocks.md lists the blocks.

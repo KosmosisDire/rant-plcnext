@@ -53,7 +53,7 @@ variables are published and how their types map.
 through Rant's Python binding. On a copy of an Engineer project:
 
 1. Add `tests/RantTest.st` as `src/RantTest.st`, `tests/RantTestGlobals.st` as
-   `src/globals/RantTest.st`, and `PROGRAM RantTestInstance WITH <task> : RantTest;` to
+   `src/globals/RantTest.st`, `tests/RantTestTypes.st` as `src/types/RantTest.st`, and `PROGRAM RantTestInstance WITH <task> : RantTest;` to
    `tasks.st`. For the math functions add `tests/RantMathTest.st` and
    `PROGRAM RantMathTestInstance WITH <task> : RantMathTest;` too.
 2. Copy the new `bin/Rant.pcwlx` in, then build and deploy.

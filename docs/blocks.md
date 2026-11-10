@@ -1,11 +1,19 @@
 # Blocks
 
-Every block shares one node per PLC, opened half a second after the first block runs. Calls
-never wait on the network: a block hands values over and the node's own thread sends them.
+Every block shares one node per PLC, and a block call never waits on the network.
+
+- Put one `Node` block in a program to name the node. Without it the node is `plc_` and the host
+  name.
+- An empty `Name` or `Topic` sets `Error` with a text.
+- `Error` and `ErrorText` clear when the cause does. A call that fails sets them until the next
+  call.
+- Value pins (`Value`, `Request`, `Response`) take a variable, not a literal.
+- A name is at most 64 bytes.
+- When the node opens again, a call in hand ends with the text `the node reopened`.
 
 ## Node
 
-Names the shared node. Without one it is `plc_` and the host name, in domain 0.
+Names the shared node, in domain 0 unless `Domain` says otherwise. A change of either opens it again.
 
 - `Name : STRING`, `Domain : INT`
 - `Peers : DINT`, the nodes it sees
@@ -13,7 +21,7 @@ Names the shared node. Without one it is `plc_` and the host name, in domain 0.
 ## Publisher
 
 Publishes `Value` on `Topic` whenever it changes, and every cycle `Send` is set. A subscriber
-that joins later gets the last value.
+that joins later gets the last value, also of a value that never changes.
 
 - `Topic : STRING`, `Value : ANY` (in out), `Send : BOOL`
 - `Count : DINT` sent, `Error : BOOL`, `ErrorText : STRING`
@@ -95,8 +103,7 @@ starts it over. docs/design.md lists which variables it publishes.
 
 - `Prefix : STRING` (`Plc`), empty for the mesh root
 - `Locals : BOOL` publishes a program's locals too
-- `Forcing : BOOL` (`TRUE`) lets the mesh force variables. The PLC logs an error for each
-  one it cannot force, at every start
+- `Forcing : BOOL` (`TRUE`) lets the mesh force variables
 - `StringCap : INT` (`80`) bytes of a string inside a struct
 - `Variables : DINT` published, `Error`, `ErrorText`
 
@@ -106,13 +113,16 @@ mirror();
 
 ## Values
 
-- A struct of the library, `Pose` or `Twist`, is that standard type.
+- A struct of the library, `Pose` or `Twist`, is that standard type. Rant Math's own types are
+  not standard: they go by their IEC names like yours.
 - `Empty` is Rant's empty type. IEC has no empty struct, so it holds one BOOL nobody sends.
-- Any other struct is a Rant struct named by its IEC type, its fields renamed snake_case.
+- Any other struct is a Rant struct named by its IEC type, its fields renamed snake_case. A
+  struct inside a struct is a struct, and a STRING inside one keeps its declared capacity.
 - A scalar is its bare type, a STRING is `string`, an array of scalars `elem[N]`, one size per
   dimension: `ARRAY[0..2, 0..2] OF REAL` is `f32[3][3]`. `Matrix3x3` and the library's other
   arrays are their standard types.
-- An array of structs or of strings does not reach the mesh yet: the block reports it.
+- An array of structs or of strings does not reach the mesh yet: the block reports it. So does
+  an array whose bounds cannot be read.
 
 ## Math
 

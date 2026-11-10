@@ -30,6 +30,11 @@ Every block and the mirror share one node, which `blocks/runtime` opens on a thr
 own (`rant_blocks`) half a second after the first block runs. A block's call only copies
 under a lock and never waits on the network.
 
+- A block gives its entity up when its name or kind changes. The node thread frees it, so it
+  counts for no slot. The eCLR has no hook for a removed block instance, so a deleted block
+  keeps its entity until the program unloads.
+- When the node opens again, the thread ends each call in hand with `the node reopened`, and a
+  Publisher sends its last value again on the new handle.
 - The node needs a topic slot per entity, so it opens again with more when the blocks or the
   mirror's variables outgrow it. A browsing mirror holds the first open back for up to 20 s,
   so the node opens once with room for its variables.
@@ -98,6 +103,10 @@ the bench: locals report attributes 0, HMI ticked locals `Ehmi`, and globals car
   (`S9f13c0a21e4b7d05`) and the refusal is logged. A nested struct is defined ahead of its
   user by the same rule, since Rant refuses an unnamed struct. A PLC struct named and shaped
   like a standard type (`Double3`, `Quaternion`) becomes that type, nested or not.
+- A type is standard when Rant's own list has its name (`rant_std_by_name`), not by namespace:
+  Rant Math's types share the `Rant` namespace.
+- A string's capacity is read from its header in the value's memory, since two capacities pad
+  to one size.
 - Rant spells fields snake_case, so `motorSpeed` and `motor_speed` would be one field. A
   member whose spelling is taken gets a number (`motor_speed_2`).
 - A string member is a capped slot (`StringCap`) so the struct stays one fixed block. A
