@@ -15,25 +15,24 @@ plcx build
   takes its functions from `bindings/plcnext/RantMath.cs` there (`MathSource`).
 - plcx needs Visual Studio's MSBuild, or `PLCX_MSBUILD` naming it.
 
-## Install
-
-```
-rant install plcnext --from .
-```
-
-- Puts `bin/Rant.pcwlx` in Engineer's user libraries, as `Rant/Rant.pcwlx` in the folder
-  Engineer's settings name (`Documents/PLCnext Engineer/Libraries` by default).
-- Run it again after each build. `rant remove plcnext` takes it out.
-
 ## Use it in a project
 
-1. Add `Rant` from Engineer's user libraries, or copy `bin/Rant.pcwlx` into the project as
-   `libs/Rant.pcwlx`.
-2. In a plcx workspace, reference it in `pcwex.toml`, with the path
-   `$(User)\Documents\PLCnext Engineer\Libraries\Rant\Rant.pcwlx` or `libs\Rant.pcwlx`.
-3. Declare the blocks like any others (docs/blocks.md).
-4. `plcx build` and `plcx deploy`. `plcx check` reads the library's types, blocks and
-   functions from it (plcx feeaf81 or newer).
+```
+rant add plcnext
+```
+
+- In a plcx workspace it puts the latest release in `libs/plcnext-<version>/Rant.pcwlx` and
+  references it in `pcwex.toml`.
+- Beside an Engineer project's `.pcwex` it puts it in Engineer's user libraries as
+  `Rant/Rant.pcwlx`. Add `Rant` to the project from there.
+- `rant update` moves both to the latest release.
+
+Then declare the blocks like any others (docs/blocks.md), and `plcx build` and `plcx deploy`.
+`plcx check` reads the library's types, blocks and functions from it (plcx feeaf81 or newer).
+
+A build of this repo goes in by hand: copy `bin/Rant.pcwlx` into the project's `libs/` and
+reference it in `pcwex.toml` as `libs\Rant.pcwlx`. Engineer finds a library only by a file named
+after its title, `Rant.pcwlx`.
 
 ## Mirror every PLC variable
 
