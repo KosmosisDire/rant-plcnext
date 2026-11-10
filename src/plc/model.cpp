@@ -100,13 +100,14 @@ std::string ShapeName(const std::string& body)
     return hashed;
 }
 
-// One size per dimension, row major as the bytes are, so a 3 by 3 REAL array is f32[3][3].
+// One size per dimension, the innermost first as the DSL reads it: a 2 by 3 INT array is i16[3][2],
+// two arrays of three, row major as the bytes are.
 std::string ArrayType(const Member& m)
 {
     if (m.standard) return m.typeName;
     std::string out = SCALAR_TYPES[static_cast<int>(m.kind)];
     if (m.dims.empty()) return out + "[" + std::to_string(m.count) + "]";
-    for (const auto& d : m.dims) out += "[" + std::to_string(d.count) + "]";
+    for (auto d = m.dims.rbegin(); d != m.dims.rend(); ++d) out += "[" + std::to_string(d->count) + "]";
     return out;
 }
 

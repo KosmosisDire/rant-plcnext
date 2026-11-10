@@ -119,7 +119,7 @@ mirror();
 - Any other struct is a Rant struct named by its IEC type, its fields renamed snake_case. A
   struct inside a struct is a struct, and a STRING inside one keeps its declared capacity.
 - A scalar is its bare type, a STRING is `string`, an array of scalars `elem[N]`, one size per
-  dimension: `ARRAY[0..2, 0..2] OF REAL` is `f32[3][3]`. `Matrix3x3` and the library's other
+  dimension: `ARRAY[0..1] OF ARRAY[0..2] OF INT` is `i16[3][2]`, two arrays of three. `Matrix3x3` and the library's other
   arrays are their standard types.
 - An array of structs or of strings does not reach the mesh yet: the block reports it. So does
   an array whose bounds cannot be read.
