@@ -83,6 +83,10 @@ struct Record {
     std::string          error;            // the handle: Build and refused sends, cleared by their success
     std::string          fault;            // the data: a value that does not fit, a call's failure
     bool                 resend = false;   // a Publisher sends its value again, since its handle is new
+    // A RemoteVariable's set waits for the owner to echo it, so an owner value sent before it never wins.
+    bool                 awaitEcho = false;
+    bool                 held = false;     // in holds an owner value that came before the echo
+    std::chrono::steady_clock::time_point echoDeadline;
     std::string          reason;           // why the call in hand fails, empty to answer it
     std::deque<std::pair<rant::Deferred<Bytes>, std::vector<uint8_t>>> calls;
     std::optional<rant::PendingTask<Bytes, Bytes>> taskIn;   // a task call not taken yet
@@ -296,6 +300,15 @@ void Build(rant::Node& node, Record& e)
                 e.Var()->on_change([&e, owner](const rant::VariableUpdate& u) {
                     const Bytes b = u.value();
                     std::lock_guard<std::mutex> g(e.mu);
+                    if (!owner && e.awaitEcho) {
+                        // The echo of the set ends the wait. A value before it is held for the deadline.
+                        const bool echo = b.size() == e.sendBuf.size() && std::equal(b.data(), b.data() + b.size(), e.sendBuf.data());
+                        e.awaitEcho = !echo;
+                        e.held = !echo;
+                        e.in.assign(b.data(), b.data() + b.size());
+                        e.fresh = false;
+                        return;
+                    }
                     e.in.assign(b.data(), b.data() + b.size());
                     // The owner's own sets come back here too, and only a write from elsewhere is news.
                     e.fresh = !owner || u.source() != 0;
@@ -386,11 +399,16 @@ void Service(Record& e)
                 if (e.stage != Stage::Ready || !var) return;
                 e.sendBuf = e.out;
                 e.stage = Stage::Sending;
+                if (e.kind == Kind::RemoteVariable) {
+                    e.awaitEcho = true;
+                    e.echoDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                }
             }
             const rant::SendStatus st = var->set(View(e.sendBuf));
             {
                 std::lock_guard<std::mutex> g(e.mu);
                 if (e.stage == Stage::Sending) e.stage = Stage::Idle;
+                if (st != rant::SendStatus::Ok) e.awaitEcho = false;
             }
             if (st == rant::SendStatus::Ok) ClearError(e);
             else if (st != rant::SendStatus::NoTopic) Fail(e, Status("a write was refused", st));
@@ -807,6 +825,12 @@ int Share(int handle, uint8_t* data, int length)
             e->stage = Stage::Ready;
             Wake();
         }
+    }
+    // An echo that never came (the owner may skip a value) lets the held value through.
+    if (e->awaitEcho && std::chrono::steady_clock::now() >= e->echoDeadline) {
+        e->awaitEcho = false;
+        e->fresh = e->held;
+        e->held = false;
     }
     // While the program's change is on its way, the mesh's value waits, since the change follows it.
     if (!e->fresh || e->stage == Stage::Ready || e->stage == Stage::Sending) return e->count * 2;
