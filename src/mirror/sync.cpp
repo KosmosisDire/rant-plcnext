@@ -244,8 +244,8 @@ void OnRemoteWrite(GdsVar& gv, const std::vector<uint8_t>& val, bool nowForced)
         } else {
             std::string refused;
             if (nowForced) ForcePlc(items); else refused = WritePlc(items);
-            log::Info(std::string(what) + " " + gv.name + " from remote ("
-                      + std::to_string(items.size()) + " leaf/leaves)");
+            // A force is rare and changes how the PLC runs, a plain write can come every millisecond.
+            if (nowForced) log::Info("force " + gv.name + " from remote (" + std::to_string(items.size()) + " leaf/leaves)");
             if (!refused.empty()) log::Error("write " + gv.name + ": " + refused);
         }
     } else {

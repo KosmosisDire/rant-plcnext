@@ -11,6 +11,7 @@
 #include "Arp/System/Rsc/ServiceManager.hpp"
 
 #include <cstring>
+#include <unordered_map>
 #include <pthread.h>
 #include <sched.h>
 
@@ -46,11 +47,18 @@ struct Write {
     bool                 forced = false;
 };
 
+// How many remote writes of one variable wait at most before newer ones replace the newest.
+constexpr int WRITES_KEPT = 3;
+
 struct State {
     std::mutex              mu;
     std::condition_variable wake;
     Config                  wanted;
     std::deque<Write>       inbox;
+    // Each variable's newest entry in inbox and how many it has. Past WRITES_KEPT a write replaces the
+    // newest, so a pulse still lands and the PLC never works through a backlog of old values.
+    struct Waiting { size_t at; int count; };
+    std::unordered_map<size_t, Waiting> waiting;
     std::string             failure;
     std::atomic<uint64_t>   gen{0};
     std::atomic<int>        published{0};
@@ -163,7 +171,15 @@ size_t CreateVariables(rant::Node& node, std::vector<GdsVar>& vars)
             State& s = M();
             {
                 std::lock_guard<std::mutex> g(s.mu);
-                s.inbox.push_back({ i, std::vector<uint8_t>(b.data(), b.data() + b.size()), u.forced() });
+                auto w = s.waiting.find(i);
+                // A forced flip always gets its own entry, since it changes how the PLC runs.
+                if (w != s.waiting.end() && w->second.count >= WRITES_KEPT && s.inbox[w->second.at].forced == u.forced()) {
+                    s.inbox[w->second.at].value.assign(b.data(), b.data() + b.size());
+                } else {
+                    const int count = w == s.waiting.end() ? 1 : w->second.count + 1;
+                    s.waiting[i] = { s.inbox.size(), count };
+                    s.inbox.push_back({ i, std::vector<uint8_t>(b.data(), b.data() + b.size()), u.forced() });
+                }
             }
             s.wake.notify_all();
         });
@@ -188,6 +204,7 @@ void Apply(std::vector<GdsVar>& vars)
     {
         std::lock_guard<std::mutex> g(M().mu);
         writes.swap(M().inbox);
+        M().waiting.clear();
     }
     for (const Write& w : writes)
         if (w.var < vars.size()) OnRemoteWrite(vars[w.var], w.value, w.forced);
@@ -327,6 +344,7 @@ void Run()
             g_cfg = s.wanted;
             gen = s.gen;
             s.inbox.clear();
+            s.waiting.clear();
         }
         Serve(gen);
     }
@@ -379,6 +397,7 @@ void StopMirror()
     s.wanted = Config{};
     s.failure.clear();
     s.inbox.clear();
+    s.waiting.clear();
     s.published = 0;
     s.running = false;
 }
