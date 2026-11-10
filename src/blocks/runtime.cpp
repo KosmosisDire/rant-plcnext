@@ -46,6 +46,9 @@ constexpr int VALUE = 0, RESPONSE = 1, PROGRESS = 2;
 
 // The longest reason a call fails with, and the longest log line or condition text: an IEC STRING's capacity.
 constexpr size_t REASON_MAX = 80, TEXT_LINE = 80;
+// What a call or a write made while the node is down fails with, since it would land late.
+constexpr char DOWN_CALL[] = "the node is not open, the call was not sent";
+constexpr char DOWN_WRITE[] = "the node is not open, the write was not applied";
 // Log lines the tasks may queue before the node thread sends them, past it a line is dropped.
 constexpr size_t LOG_LINES = 64;
 // Keys of conditions other nodes cleared, waiting for the node thread.
@@ -317,6 +320,8 @@ struct VariableRecord : Record {
     bool awaitEcho = false;
     bool held = false;     // in holds an owner value that came before the echo
     Clock::time_point echoDeadline;
+    // The node closed after this record had a handle. Only a write made before Rant first started waits.
+    bool down = false;
     std::optional<rant::VariableDefinition<Bytes>> var;
     std::optional<rant::RemoteVariable<Bytes>>     remote;
 
@@ -355,6 +360,8 @@ struct VariableRecord : Record {
         };
         if (owner) Var()->on_change(heard);
         else Var()->on_write(heard);
+        std::lock_guard<std::mutex> g(mu);
+        down = false;
     }
     void Service() override
     {
@@ -385,6 +392,10 @@ struct VariableRecord : Record {
     }
     void Drop(const char*) override
     {
+        {
+            std::lock_guard<std::mutex> g(mu);
+            if (var || remote) down = true;
+        }
         var.reset();
         remote.reset();
     }
@@ -546,6 +557,8 @@ struct CallRecord : Record {
     std::vector<uint8_t> progress;
     bool progressFresh = false;
     uint32_t callId = 0;        // a task call in flight
+    // The node closed after this record had a handle. Only a call made before Rant first started waits.
+    bool down = false;
     std::optional<rant::RemoteFunction<Bytes, Bytes>>        fn;
     std::optional<rant::RemoteTask<Bytes, Bytes, Bytes>>     task;
 
@@ -562,6 +575,8 @@ struct CallRecord : Record {
         else
             fn = node.remote_function<Bytes, Bytes>(name, rant::FunctionOptions{}, node.schema(schema[VALUE]),
                                                     node.schema(schema[RESPONSE]));
+        std::lock_guard<std::mutex> g(mu);
+        down = false;
     }
     // The response handler of a call.
     void Answered(const rant::ResponseView<Bytes>& r)
@@ -623,10 +638,13 @@ struct CallRecord : Record {
     {
         {
             std::lock_guard<std::mutex> g(mu);
-            if (step == Step::Busy) {
+            const bool had = fn || task;
+            // A call queued for this handle would go out on the next node, late, so it fails as one in flight does.
+            if (step == Step::Busy || (step == Step::Ready && had)) {
                 fault = why;
                 step = Step::Failed;
             }
+            if (had) down = true;
         }
         fn.reset();
         task.reset();
@@ -1075,6 +1093,7 @@ void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample)
     e->last.reserve(room);
     e->out.reserve(room);
     e->sendBuf.reserve(room);
+    e->fault.reserve(REASON_MAX);
     Wake();
 }
 
@@ -1132,7 +1151,9 @@ int Share(int handle, uint8_t* data, int length)
     if (!e->hasLast || e->scratch != e->last) {
         e->last = e->scratch;
         e->hasLast = true;
-        if (!baseline) {
+        if (!baseline && e->down) {
+            e->fault.assign(DOWN_WRITE);
+        } else if (!baseline) {
             e->out = e->scratch;
             e->send = Send::Ready;
             Wake();
@@ -1251,6 +1272,11 @@ int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLen
     const Layout& rsp = e->parts[RESPONSE];
     if (rising && Encode(*e, VALUE, request, requestLength)
         && (e->step == Step::Idle || e->step == Step::Done || e->step == Step::Failed)) {
+        if (e->down) {
+            e->fault.assign(DOWN_CALL);
+            e->step = Step::Failed;
+            return e->shown = 3;
+        }
         e->out = e->scratch;
         e->fault.clear();
         e->in.clear();

@@ -10,6 +10,8 @@ Every block shares one node per PLC, and a block call never waits on the network
 - Value pins (`Value`, `Request`, `Response`) take a variable, not a literal.
 - A name is at most 64 bytes.
 - When the node opens again, a call in hand ends with the text `the node reopened`.
+- A call or a variable write made while the node is down sets `Error` and is never sent late. One
+  made before the node first opens is sent once it does.
 
 ## Node
 
