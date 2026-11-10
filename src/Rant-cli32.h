@@ -46,6 +46,8 @@ public:
         static Int32 Serve(Int32 p0, UIntPtr p1, Int32 p2, UIntPtr p3, Int32 p4, UIntPtr p5, Int32 p6, Boolean p7);
         static void Reject(Int32 p0, pcoslib::IecString80* p1);
         static Int32 Call(Int32 p0, Boolean p1, Boolean p2, UIntPtr p3, Int32 p4, UIntPtr p5, Int32 p6, UIntPtr p7, Int32 p8);
+        static Int32 Log(Int32 p0, pcoslib::IecString80* p1, pcoslib::IecString80* p2);
+        static Boolean Condition(Int32 p0, Boolean p1, Int32 p2, Boolean p3, pcoslib::IecString80* p4);
         static Boolean Failed(Int32 p0, pcoslib::IecString80* p1);
         static Int32 Mirror(pcoslib::IecString80* p0, Boolean p1, Boolean p2, Int32 p3);
         static Boolean MirrorFailed(pcoslib::IecString80* p0);

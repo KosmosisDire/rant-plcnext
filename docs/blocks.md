@@ -99,6 +99,29 @@ while `Busy`, and `Cancel` asks the provider to stop. `Done` or `Error` holds th
 - `Name : STRING`, `Execute`, `Cancel : BOOL`, `Request`, `Progress`, `Response : ANY` (in out)
 - `Busy`, `Done`, `Error : BOOL`, `ErrorText : STRING`
 
+## LogLine
+
+Sends `Text` as a log line of the node at `Level`, on each rising `Execute`.
+
+- `Execute : BOOL`, `Level : Level` (`Level#Info` by default), `Text : STRING`
+- `Count : DINT` sent, `Error`, `ErrorText`
+
+## Status
+
+Raises the node's status condition `Key` while `Active`, at `Level` with `Text`, and clears it
+after. A `Clearable` one may be cleared from another node, such as an HMI: it stays down until
+`Active` goes FALSE, and `Cleared` is set for the cycle the clear arrives.
+
+```
+drive_fault(Key := 'drive2', Active := drive_tripped, Level := Level#Error,
+            Text := 'drive 2 tripped', Clearable := TRUE);
+```
+
+- `Key : STRING`, `Active : BOOL`, `Level : Level` (`Level#Warn` by default), `Text : STRING`, `Clearable : BOOL`
+- `Cleared : BOOL`, `Error`, `ErrorText`
+
+`Level` is `Debug`, `Info`, `Warn` or `Error`.
+
 ## Mirror
 
 Publishes every PLC variable as a variable of the node under `Prefix`, read write, and

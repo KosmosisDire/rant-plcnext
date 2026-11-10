@@ -44,8 +44,12 @@ constexpr auto MIRROR_WAIT = std::chrono::seconds(20);
 // The parts of an entity's value, as iec/Layout.cs numbers them.
 constexpr int VALUE = 0, RESPONSE = 1, PROGRESS = 2;
 
-// The longest reason a call fails with, an IEC STRING's capacity.
-constexpr size_t REASON_MAX = 80;
+// The longest reason a call fails with, and the longest log line or condition text: an IEC STRING's capacity.
+constexpr size_t REASON_MAX = 80, TEXT_LINE = 80;
+// Log lines the tasks may queue before the node thread sends them, past it a line is dropped.
+constexpr size_t LOG_LINES = 64;
+// Keys of conditions other nodes cleared, waiting for the node thread.
+constexpr size_t CLEARED_MAX = 64;
 
 // A node's topic slots: what the entities and the mirror need, and what an open grants. A task takes three.
 constexpr size_t SLOTS_BASE = 16, SLOTS_PER_ENTITY = 3;
@@ -135,6 +139,18 @@ struct State {
     std::thread             thread;
     std::atomic<bool>       running{false};
     std::atomic<bool>       stop{false};
+    // Log lines from the tasks, a fixed ring the node thread sends from.
+    struct LogLine {
+        uint8_t level;
+        uint8_t length;
+        char    text[TEXT_LINE];
+    };
+    std::mutex              logMu;
+    LogLine                 lines[LOG_LINES];
+    size_t                  logHead = 0, logCount = 0;
+    // Keys of conditions other nodes cleared, from Rant's event callback.
+    std::mutex               clearedMu;
+    std::vector<std::string> clearedKeys;
     // The task sets pending and writes the eventfd only when pending was clear, at most once a pass.
     std::atomic<bool>       pending{false};
     std::atomic<int>        wakeFd{-1};
@@ -617,6 +633,76 @@ struct CallRecord : Record {
     }
 };
 
+// Status: one condition of the node, raised while the task holds it active.
+struct StatusRecord : Record {
+    // The task's wish, under mu.
+    bool   active = false;
+    bool   clearable = false;
+    int    level = 3;
+    char   text[TEXT_LINE];
+    size_t textLength = 0;
+    bool   changed = false;
+    bool   clearedByPeer = false;  // another node cleared it, so it stays down until active goes false
+    bool   clearedNews = false;    // the task has not been told of that clear yet
+    // The node thread's.
+    rant::Node* node = nullptr;
+    bool        raised = false;
+
+    StatusRecord() : Record(Kind::Status) {}
+    static bool Holds(Kind k) { return k == Kind::Status; }
+    int Parts() const override { return 0; }
+
+    void Make(rant::Node& n, const std::string (&)[3], const std::vector<uint8_t>&) override
+    {
+        node = &n;
+        // A new node holds none of the conditions the old one did.
+        std::lock_guard<std::mutex> g(mu);
+        changed = true;
+    }
+    void Service() override
+    {
+        bool want, canClear;
+        int at;
+        char t[TEXT_LINE];
+        size_t length;
+        {
+            std::lock_guard<std::mutex> g(mu);
+            if (!changed || !node) return;
+            changed = false;
+            want = active && !clearedByPeer;
+            canClear = clearable;
+            at = level;
+            length = textLength;
+            std::memcpy(t, text, length);
+        }
+        rant::SendStatus st = rant::SendStatus::Ok;
+        if (want) {
+            st = node->set_status(name, static_cast<rant::Level>(at), std::string_view(t, length), canClear);
+            raised = st == rant::SendStatus::Ok;
+        } else if (raised) {
+            node->clear_status(name);
+            raised = false;
+        }
+        if (st == rant::SendStatus::Ok) ClearError(*this);
+        else Fail(*this, Status("the condition was refused", st));
+    }
+    void Drop(const char*) override
+    {
+        if (node && raised) node->clear_status(name);
+        raised = false;
+        node = nullptr;
+    }
+    // Another node cleared the condition. Node thread only.
+    void ClearedElsewhere()
+    {
+        raised = false;
+        std::lock_guard<std::mutex> g(mu);
+        if (!active) return;
+        clearedByPeer = true;
+        clearedNews = true;
+    }
+};
+
 std::unique_ptr<Record> NewRecord(Kind k)
 {
     switch (k) {
@@ -628,6 +714,7 @@ std::unique_ptr<Record> NewRecord(Kind k)
         case Kind::TaskDefinition:     return std::make_unique<ServeRecord>(k);
         case Kind::RemoteFunction:
         case Kind::RemoteTask:         return std::make_unique<CallRecord>(k);
+        case Kind::Status:             return std::make_unique<StatusRecord>();
     }
     return nullptr;
 }
@@ -744,6 +831,12 @@ void Run()
                 o.max_topics = static_cast<uint16_t>(slots);
                 node = std::make_shared<rant::Node>(name, o);
                 log::Attach(node);
+                node->on_event([](const rant::Event& ev) {
+                    if (ev.kind() != rant::EventKind::StatusCleared) return;
+                    State& st = S();
+                    std::lock_guard<std::mutex> g(st.clearedMu);
+                    if (st.clearedKeys.size() < CLEARED_MAX) st.clearedKeys.push_back(ev.detail());
+                });
                 log::ArpInfo("node " + name + " open in domain " + std::to_string(domain));
                 openGen = configGen;
                 ++epoch;
@@ -776,6 +869,28 @@ void Run()
                 }
                 if (!unlogged.empty()) log::ArpError(e->name + ": " + unlogged);
                 e->Service();
+            }
+            // The tasks' log lines, sent here since a Rant call may wait.
+            for (;;) {
+                State::LogLine line;
+                {
+                    std::lock_guard<std::mutex> g(s.logMu);
+                    if (!s.logCount) break;
+                    line = s.lines[s.logHead];
+                    s.logHead = (s.logHead + 1) % LOG_LINES;
+                    --s.logCount;
+                }
+                node->log(static_cast<rant::Level>(line.level), std::string_view(line.text, line.length));
+            }
+            {
+                std::vector<std::string> cleared;
+                {
+                    std::lock_guard<std::mutex> g(s.clearedMu);
+                    cleared.swap(s.clearedKeys);
+                }
+                for (const std::string& key : cleared)
+                    for (Record* e : list)
+                        if (StatusRecord* c = As<StatusRecord>(e); c && c->name == key) c->ClearedElsewhere();
             }
             if (now >= peersAt) {
                 int active = 0;
@@ -876,7 +991,7 @@ int Configure(int& owner, const char* name, size_t length, int domain, bool wasR
 
 int Entity(int kind, int handle, const char* name, size_t length)
 {
-    if (kind < static_cast<int>(Kind::Publisher) || kind > static_cast<int>(Kind::RemoteTask) || length == 0) return 0;
+    if (kind < static_cast<int>(Kind::Publisher) || kind > static_cast<int>(Kind::Status) || length == 0) return 0;
     if (Record* e = Find(handle))
         if (static_cast<int>(e->kind) == kind && e->name.size() == length && std::memcmp(e->name.data(), name, length) == 0)
             return handle;
@@ -1175,6 +1290,50 @@ int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLen
             return e->shown = 3;
         default: return e->shown = 0;
     }
+}
+
+bool Condition(int handle, bool active, int level, bool clearable, const char* text, size_t length)
+{
+    StatusRecord* e = As<StatusRecord>(Find(handle));
+    if (!e) return false;
+    length = std::min(length, TEXT_LINE);
+    if (level < 1 || level > 4) level = 3;
+    std::unique_lock<std::mutex> g = Try(*e);
+    // A clear's news keeps for the next cycle.
+    if (!g.owns_lock()) return false;
+    if (!active) e->clearedByPeer = false;
+    if (e->active != active || e->clearable != clearable || e->level != level || e->textLength != length
+        || std::memcmp(e->text, text, length) != 0) {
+        e->active = active;
+        e->clearable = clearable;
+        e->level = level;
+        e->textLength = length;
+        std::memcpy(e->text, text, length);
+        e->changed = true;
+        Wake();
+    }
+    const bool news = e->clearedNews;
+    e->clearedNews = false;
+    return news;
+}
+
+int Log(int level, const char* text, size_t length)
+{
+    State& s = S();
+    {
+        std::unique_lock<std::mutex> g(s.logMu, std::try_to_lock);
+        if (!g.owns_lock()) return 0;
+        if (s.logCount == LOG_LINES) return -1;
+        State::LogLine& line = s.lines[(s.logHead + s.logCount) % LOG_LINES];
+        line.level = static_cast<uint8_t>(level < 1 || level > 4 ? 2 : level);
+        line.length = static_cast<uint8_t>(std::min(length, TEXT_LINE));
+        std::memcpy(line.text, text, line.length);
+        ++s.logCount;
+    }
+    // A program with only Log blocks still needs the node.
+    Touch();
+    Wake();
+    return 1;
 }
 
 std::shared_ptr<rant::Node> MirrorNode(size_t slots, bool browsing, uint64_t& epoch)

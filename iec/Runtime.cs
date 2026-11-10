@@ -15,6 +15,7 @@ namespace Rant
         public const int RemoteVariable = 6;
         public const int TaskDefinition = 7;
         public const int RemoteTask = 8;
+        public const int Status = 9;
 
         // What Runtime.Serve reports beside the calls ended times eight.
         public const int ServeNew = 1;
@@ -107,6 +108,19 @@ namespace Rant
             UIntPtr progress, int progressLength, UIntPtr response, int responseLength)
         {
             return 0;
+        }
+
+        // Queues text as a log line of the node at level: 1 queued, 0 busy so try again next cycle,
+        // -1 dropped with why in error.
+        public static int Log(int level, ref IecString80 text, ref IecString80 error)
+        {
+            return 0;
+        }
+
+        // A Status entity's condition, raised while active. True the cycle another node cleared it.
+        public static bool Condition(int handle, bool active, int level, bool clearable, ref IecString80 text)
+        {
+            return false;
         }
 
         // Writes why the entity cannot work into text, and returns whether it cannot.

@@ -15,7 +15,7 @@ namespace blocks {
 // The same values as Kind in iec/Runtime.cs.
 enum class Kind : int {
     Publisher = 1, Subscriber = 2, FunctionDefinition = 3, RemoteFunction = 4,
-    VariableDefinition = 5, RemoteVariable = 6, TaskDefinition = 7, RemoteTask = 8
+    VariableDefinition = 5, RemoteVariable = 6, TaskDefinition = 7, RemoteTask = 8, Status = 9
 };
 
 // The node's name and domain, reopening it when either changes. Returns the peers it sees, or -1
@@ -52,6 +52,13 @@ void Reject(int handle, const char* reason, size_t length);
 // response written, 3 failed. cancel asks the provider of a running task to stop.
 int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLength, uint8_t* progress,
          int progressLength, uint8_t* response, int responseLength);
+
+// Log: queues text as a log line of the node at level (Rant's, 1 debug to 4 error). Returns 1 when
+// queued, 0 while the queue is busy, -1 when the queue is full and the line was dropped.
+int Log(int level, const char* text, size_t length);
+// Status: the entity's condition, raised while active and cleared after. Returns true the call
+// after another node cleared it, which holds it down until active goes false.
+bool Condition(int handle, bool active, int level, bool clearable, const char* text, size_t length);
 
 // The same values as Kind.Serve* in iec/Runtime.cs.
 constexpr int SERVE_NEW = 1, SERVE_HELD = 2, SERVE_CANCEL = 4;

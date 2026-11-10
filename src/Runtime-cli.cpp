@@ -103,6 +103,20 @@ Int32 __PInvoke__ Rant::Runtime::Call(Int32 p0, Boolean p1, Boolean p2, UIntPtr 
     return blocks::Call(p0, p1, p2, Bytes(p3), p4, Bytes(p5), p6, Bytes(p7), p8);
 }
 
+Int32 __PInvoke__ Rant::Runtime::Log(Int32 p0, pcoslib::IecString80* p1, pcoslib::IecString80* p2)
+{
+    const int queued = blocks::Log(p0, Chars80(p1), Length80(p1));
+    static const char full[] = "the log queue is full, the line was dropped";
+    if (queued < 0) Report(full, sizeof full - 1, p2);
+    else if (queued > 0 && p2 && p2->GetLength() != 0) Report(full, 0, p2);
+    return queued;
+}
+
+Boolean __PInvoke__ Rant::Runtime::Condition(Int32 p0, Boolean p1, Int32 p2, Boolean p3, pcoslib::IecString80* p4)
+{
+    return blocks::Condition(p0, p1, p2, p3, Chars80(p4), Length80(p4));
+}
+
 Boolean __PInvoke__ Rant::Runtime::Failed(Int32 p0, pcoslib::IecString80* p1)
 {
     char why[TEXT_MAX];
