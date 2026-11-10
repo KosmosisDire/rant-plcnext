@@ -54,10 +54,9 @@ size_t SlotsGranted(size_t entities, size_t mirror)
     return std::min(GRANT_BASE + GRANT_PER_ENTITY * entities + mirror, SLOTS_MAX);
 }
 
-enum class Stage { Idle, Ready, Sending, Waiting, Answered, Busy, Done, Failed };
-
+// What every entity has. Each family of blocks adds its own state and handle below.
 struct Record {
-    Kind        kind = Kind::Publisher;
+    const Kind  kind;
     std::string name;
     std::atomic<bool> removed{false};   // retired by its block, the node thread frees it
 
@@ -66,7 +65,6 @@ struct Record {
     std::vector<uint8_t> scratch;          // a value as the wire spells it
     std::vector<uint8_t> last;             // the last value sent, or a variable's last known
     bool                 hasLast = false;
-    bool                 lastExecute = false;
 
     // Shared with the node thread, under mu and held only for a copy.
     std::mutex           mu;
@@ -75,87 +73,25 @@ struct Record {
     std::vector<uint8_t> out;              // to the mesh: a value, a response or a request
     std::vector<uint8_t> in;               // from the mesh: a value, a request or a response
     bool                 fresh = false;    // in holds a value the task has not taken
-    std::vector<uint8_t> progress;         // a task's progress, either way
-    bool                 progressFresh = false;
-    bool                 cancel = false;   // a cancel asked for the call in hand
-    Stage                stage = Stage::Idle;
     int                  count = 0;
     std::string          error;            // the handle: Build and refused sends, cleared by their success
     std::string          fault;            // the data: a value that does not fit, a call's failure
-    bool                 resend = false;   // a Publisher sends its value again, since its handle is new
-    // A RemoteVariable's set waits for the owner to echo it, so an owner value sent before it never wins.
-    bool                 awaitEcho = false;
-    bool                 held = false;     // in holds an owner value that came before the echo
-    std::chrono::steady_clock::time_point echoDeadline;
-    std::string          reason;           // why the call in hand fails, empty to answer it
-    std::deque<std::pair<rant::Deferred<Bytes>, std::vector<uint8_t>>> calls;
-    std::optional<rant::PendingTask<Bytes, Bytes>> taskIn;   // a task call not taken yet
-    // The node thread's copies of what it sends, so a swap with out keeps both capacities.
-    std::vector<uint8_t> sendBuf, sendProgress;
-    // The call the task holds. Only the node thread touches it once taken.
-    rant::Deferred<Bytes>             current;
-    rant::PendingTask<Bytes, Bytes>   currentTask;
-    uint32_t                          callId = 0;   // RemoteTask: the call in flight
-    bool                              cancelSent = false;
+    // The node thread's copy of what it sends, so a swap with out keeps both capacities.
+    std::vector<uint8_t> sendBuf;
 
     // The node thread's side.
     uint64_t builtGen = 0;
     uint64_t builtEpoch = 0;
-    std::optional<rant::Publisher<Bytes>>                    pub;
-    std::optional<rant::Subscriber<Bytes>>                   sub;
-    std::optional<rant::FunctionDefinition<Bytes, Bytes>>    fn;
-    std::optional<rant::RemoteFunction<Bytes, Bytes>>        remote;
-    std::optional<rant::VariableDefinition<Bytes>>           var;
-    std::optional<rant::RemoteVariable<Bytes>>               remoteVar;
-    std::optional<rant::TaskDefinition<Bytes, Bytes, Bytes>> task;
-    std::optional<rant::RemoteTask<Bytes, Bytes, Bytes>>     remoteTask;
 
-    // Ends the calls in hand with why, then releases the Rant handles. Node thread only.
-    void Drop(const char* why)
-    {
-        rant::Deferred<Bytes> held;
-        rant::PendingTask<Bytes, Bytes> heldTask;
-        std::optional<rant::PendingTask<Bytes, Bytes>> queuedTask;
-        std::deque<std::pair<rant::Deferred<Bytes>, std::vector<uint8_t>>> queued;
-        {
-            std::lock_guard<std::mutex> g(mu);
-            held = std::move(current);
-            heldTask = std::move(currentTask);
-            queuedTask = std::move(taskIn);
-            taskIn.reset();
-            queued.swap(calls);
-            if ((kind == Kind::FunctionDefinition || kind == Kind::TaskDefinition) && stage != Stage::Idle) {
-                stage = Stage::Idle;
-                cancel = false;
-                reason.clear();
-            }
-            if ((kind == Kind::RemoteFunction || kind == Kind::RemoteTask) && stage == Stage::Busy) {
-                fault = why;
-                stage = Stage::Failed;
-            }
-        }
-        held.fail(why);
-        heldTask.fail(why);
-        if (queuedTask) queuedTask->fail(why);
-        for (auto& q : queued) q.first.fail(why);
-        pub.reset(); sub.reset(); fn.reset(); remote.reset();
-        var.reset(); remoteVar.reset(); task.reset(); remoteTask.reset();
-    }
-    int Parts() const
-    {
-        switch (kind) {
-            case Kind::FunctionDefinition:
-            case Kind::RemoteFunction: return 2;
-            case Kind::TaskDefinition:
-            case Kind::RemoteTask: return 3;
-            default: return 1;
-        }
-    }
-    rant::VariableDefinition<Bytes>* Var()
-    {
-        if (var) return &*var;
-        return remoteVar ? &*remoteVar : nullptr;
-    }
+    explicit Record(Kind k) : kind(k) {}
+    virtual ~Record() = default;
+    virtual int Parts() const { return 1; }
+    // Makes the Rant handle from the parts' schemas, value being the last one out. Throws when it cannot.
+    virtual void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>& value) = 0;
+    // Moves what the task queued onto the mesh. Node thread only.
+    virtual void Service() = 0;
+    // Ends the calls in hand with why, then releases the Rant handle. Node thread only.
+    virtual void Drop(const char* why) = 0;
 };
 
 struct State {
@@ -248,6 +184,385 @@ rant::Qos Catching()
 
 Bytes View(const std::vector<uint8_t>& v) { return Bytes(v.data(), v.size()); }
 
+// Publisher: sends a value the task changed, or one it asked to send.
+struct PublisherRecord : Record {
+    bool ready = false;    // out holds a value to send
+    bool resend = false;   // the next value goes out even unchanged, since the handle is new
+    std::optional<rant::Publisher<Bytes>> pub;
+
+    PublisherRecord() : Record(Kind::Publisher) {}
+    static bool Holds(Kind k) { return k == Kind::Publisher; }
+
+    void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>&) override
+    {
+        // A block publishes on change, so a change must arrive and a late reader gets the last.
+        rant::Qos q = Catching();
+        q.keep_last = 1;
+        pub = node.publisher<Bytes>(name, q, node.schema(schema[VALUE]));
+        std::lock_guard<std::mutex> g(mu);
+        resend = true;
+    }
+    void Service() override
+    {
+        {
+            std::lock_guard<std::mutex> g(mu);
+            if (!ready || !pub) return;
+            out.swap(sendBuf);
+            ready = false;
+        }
+        const rant::SendStatus st = pub->send(View(sendBuf));
+        if (st == rant::SendStatus::Ok) {
+            std::lock_guard<std::mutex> g(mu);
+            ++count;
+            error.clear();
+        } else if (st == rant::SendStatus::NoTopic) {
+            // The value found no topic, so the block sends it again.
+            std::lock_guard<std::mutex> g(mu);
+            resend = true;
+        } else {
+            Fail(*this, Status("a value was refused", st));
+        }
+    }
+    void Drop(const char*) override { pub.reset(); }
+};
+
+// Subscriber: keeps the newest value for the task.
+struct SubscriberRecord : Record {
+    std::optional<rant::Subscriber<Bytes>> sub;
+
+    SubscriberRecord() : Record(Kind::Subscriber) {}
+    static bool Holds(Kind k) { return k == Kind::Subscriber; }
+
+    void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>&) override
+    {
+        sub = node.subscriber<Bytes>(name, [this](const rant::MessageView& m) {
+            const Bytes b = m.data();
+            std::lock_guard<std::mutex> g(mu);
+            in.assign(b.data(), b.data() + b.size());
+            fresh = true;
+            ++count;
+        }, Catching(), node.schema(schema[VALUE]));
+    }
+    void Service() override {}
+    void Drop(const char*) override { sub.reset(); }
+};
+
+// VariableDefinition and RemoteVariable: a value both the task and the mesh may change.
+struct VariableRecord : Record {
+    enum class Send { Idle, Ready, Sending };
+    Send send = Send::Idle;
+    // A remote's set waits for the owner to echo it, so an owner value sent before it never wins.
+    bool awaitEcho = false;
+    bool held = false;     // in holds an owner value that came before the echo
+    Clock::time_point echoDeadline;
+    std::optional<rant::VariableDefinition<Bytes>> var;
+    std::optional<rant::RemoteVariable<Bytes>>     remote;
+
+    explicit VariableRecord(Kind k) : Record(k) {}
+    static bool Holds(Kind k) { return k == Kind::VariableDefinition || k == Kind::RemoteVariable; }
+    bool Owner() const { return kind == Kind::VariableDefinition; }
+    rant::VariableDefinition<Bytes>* Var()
+    {
+        if (var) return &*var;
+        return remote ? &*remote : nullptr;
+    }
+
+    void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>& value) override
+    {
+        const bool owner = Owner();
+        rant::VariableOptions<Bytes> o;
+        if (owner && !value.empty()) o.initial = View(value);
+        if (owner) var = node.variable_definition<Bytes>(name, o, node.schema(schema[VALUE]));
+        else remote = node.remote_variable<Bytes>(name, o, node.schema(schema[VALUE]));
+        Var()->on_change([this, owner](const rant::VariableUpdate& u) {
+            const Bytes b = u.value();
+            std::lock_guard<std::mutex> g(mu);
+            if (!owner && awaitEcho) {
+                // The echo of the set ends the wait. A value before it is held for the deadline.
+                const bool echo = b.size() == sendBuf.size() && std::equal(b.data(), b.data() + b.size(), sendBuf.data());
+                awaitEcho = !echo;
+                held = !echo;
+                in.assign(b.data(), b.data() + b.size());
+                fresh = false;
+                return;
+            }
+            in.assign(b.data(), b.data() + b.size());
+            // The owner's own sets come back here too, and only a write from elsewhere is news.
+            fresh = !owner || u.source() != 0;
+        });
+    }
+    void Service() override
+    {
+        rant::VariableDefinition<Bytes>* v = Var();
+        {
+            std::lock_guard<std::mutex> g(mu);
+            if (send != Send::Ready || !v) return;
+            sendBuf = out;
+            send = Send::Sending;
+            if (!Owner()) {
+                awaitEcho = true;
+                echoDeadline = Clock::now() + std::chrono::seconds(1);
+            }
+        }
+        const rant::SendStatus st = v->set(View(sendBuf));
+        {
+            std::lock_guard<std::mutex> g(mu);
+            if (send == Send::Sending) send = Send::Idle;
+            if (st != rant::SendStatus::Ok) awaitEcho = false;
+        }
+        if (st == rant::SendStatus::Ok) ClearError(*this);
+        else if (st != rant::SendStatus::NoTopic) Fail(*this, Status("a write was refused", st));
+    }
+    void Drop(const char*) override
+    {
+        var.reset();
+        remote.reset();
+    }
+};
+
+// FunctionDefinition and TaskDefinition: the mesh calls, and the task answers one call at a time.
+struct ServeRecord : Record {
+    enum class Hold { Idle, Waiting, Answered };
+    Hold hold = Hold::Idle;
+    bool cancel = false;                   // a cancel asked for the task in hand
+    std::string reason;                    // why the call in hand fails, empty to answer it
+    std::vector<uint8_t> progress, sendProgress;
+    bool progressFresh = false;
+    std::deque<std::pair<rant::Deferred<Bytes>, std::vector<uint8_t>>> calls;
+    std::optional<rant::PendingTask<Bytes, Bytes>> taskIn;   // a task call not taken yet
+    // The call the task holds. Only the node thread touches it once taken.
+    rant::Deferred<Bytes>           current;
+    rant::PendingTask<Bytes, Bytes> currentTask;
+    std::optional<rant::FunctionDefinition<Bytes, Bytes>>    fn;
+    std::optional<rant::TaskDefinition<Bytes, Bytes, Bytes>> task;
+
+    explicit ServeRecord(Kind k) : Record(k) {}
+    static bool Holds(Kind k) { return k == Kind::FunctionDefinition || k == Kind::TaskDefinition; }
+    bool IsTask() const { return kind == Kind::TaskDefinition; }
+    int Parts() const override { return IsTask() ? 3 : 2; }
+
+    void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>&) override
+    {
+        if (!IsTask()) {
+            fn = node.function_definition<Bytes, Bytes>(name, [this](rant::Request<Bytes>& rq) {
+                const Bytes b = rq.data();
+                std::vector<uint8_t> request(b.data(), b.data() + b.size());
+                rant::Deferred<Bytes> later = rq.defer();
+                std::lock_guard<std::mutex> g(mu);
+                calls.emplace_back(std::move(later), std::move(request));
+            }, rant::FunctionOptions{}, node.schema(schema[VALUE]), node.schema(schema[RESPONSE]));
+            return;
+        }
+        rant::TaskOptions o;
+        o.exclusive = true;
+        task = node.task_definition<Bytes, Bytes, Bytes>(name, [this](rant::TaskRequest<Bytes, Bytes>& rq) {
+            const Bytes b = rq.data();
+            bool busy;
+            {
+                std::lock_guard<std::mutex> g(mu);
+                busy = taskIn || hold != Hold::Idle;
+                if (!busy) {
+                    in.assign(b.data(), b.data() + b.size());
+                    taskIn = rq.defer();
+                }
+            }
+            if (busy) rq.fail("the task is busy");
+        }, o, node.schema(schema[VALUE]), node.schema(schema[PROGRESS]), node.schema(schema[RESPONSE]));
+    }
+    void Service() override
+    {
+        if (!IsTask()) {
+            rant::Deferred<Bytes> call;
+            std::string why;
+            {
+                std::lock_guard<std::mutex> g(mu);
+                if (hold != Hold::Answered) return;
+                call = std::move(current);
+                out.swap(sendBuf);
+                why.swap(reason);
+                hold = Hold::Idle;
+            }
+            if (!why.empty()) call.fail(why);
+            else call.complete(View(sendBuf));
+            return;
+        }
+        Hold now;
+        bool sendNow = false;
+        {
+            std::lock_guard<std::mutex> g(mu);
+            now = hold;
+            if (now == Hold::Waiting && progressFresh) {
+                progress.swap(sendProgress);
+                progressFresh = false;
+                sendNow = true;
+            }
+        }
+        if (now == Hold::Waiting) {
+            // The task never touches the call it handed over, so it is used here unlocked.
+            if (sendNow && !sendProgress.empty()) currentTask.progress(View(sendProgress));
+            if (currentTask.cancelled()) {
+                std::lock_guard<std::mutex> g(mu);
+                cancel = true;
+            }
+        } else if (now == Hold::Answered) {
+            rant::PendingTask<Bytes, Bytes> call;
+            std::string why;
+            bool cancelled;
+            {
+                std::lock_guard<std::mutex> g(mu);
+                call = std::move(currentTask);
+                out.swap(sendBuf);
+                why.swap(reason);
+                cancelled = cancel;
+                cancel = false;
+                hold = Hold::Idle;
+            }
+            if (!why.empty()) call.fail(why);
+            else if (cancelled) call.complete_cancelled({}, View(sendBuf));
+            else call.complete(View(sendBuf));
+        }
+    }
+    void Drop(const char* why) override
+    {
+        rant::Deferred<Bytes> heldCall;
+        rant::PendingTask<Bytes, Bytes> heldTask;
+        std::optional<rant::PendingTask<Bytes, Bytes>> queuedTask;
+        std::deque<std::pair<rant::Deferred<Bytes>, std::vector<uint8_t>>> queued;
+        {
+            std::lock_guard<std::mutex> g(mu);
+            heldCall = std::move(current);
+            heldTask = std::move(currentTask);
+            queuedTask = std::move(taskIn);
+            taskIn.reset();
+            queued.swap(calls);
+            hold = Hold::Idle;
+            cancel = false;
+            reason.clear();
+        }
+        heldCall.fail(why);
+        heldTask.fail(why);
+        if (queuedTask) queuedTask->fail(why);
+        for (auto& q : queued) q.first.fail(why);
+        fn.reset();
+        task.reset();
+    }
+};
+
+// RemoteFunction and RemoteTask: the task calls once on a rising Execute and reads the answer.
+struct CallRecord : Record {
+    enum class Step { Idle, Ready, Busy, Done, Failed };
+    Step step = Step::Idle;
+    bool lastExecute = false;   // the task's own, for the rising edge
+    bool cancel = false;        // a cancel asked for the call in flight
+    bool cancelSent = false;
+    std::vector<uint8_t> progress;
+    bool progressFresh = false;
+    uint32_t callId = 0;        // a task call in flight
+    std::optional<rant::RemoteFunction<Bytes, Bytes>>        fn;
+    std::optional<rant::RemoteTask<Bytes, Bytes, Bytes>>     task;
+
+    explicit CallRecord(Kind k) : Record(k) {}
+    static bool Holds(Kind k) { return k == Kind::RemoteFunction || k == Kind::RemoteTask; }
+    bool IsTask() const { return kind == Kind::RemoteTask; }
+    int Parts() const override { return IsTask() ? 3 : 2; }
+
+    void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>&) override
+    {
+        if (IsTask())
+            task = node.remote_task<Bytes, Bytes, Bytes>(name, rant::TaskOptions{}, node.schema(schema[VALUE]),
+                                                         node.schema(schema[PROGRESS]), node.schema(schema[RESPONSE]));
+        else
+            fn = node.remote_function<Bytes, Bytes>(name, rant::FunctionOptions{}, node.schema(schema[VALUE]),
+                                                    node.schema(schema[RESPONSE]));
+    }
+    // The response handler of a call.
+    void Answered(const rant::ResponseView<Bytes>& r)
+    {
+        const Bytes b = r.data();
+        std::string message;
+        if (!r.ok()) message = std::string(r.message());
+        std::lock_guard<std::mutex> g(mu);
+        // A call a reopen already ended has no one waiting for its answer.
+        if (step != Step::Busy) return;
+        if (r.ok()) {
+            in.assign(b.data(), b.data() + b.size());
+            step = Step::Done;
+        } else {
+            fault = std::move(message);
+            step = Step::Failed;
+        }
+    }
+    void Service() override
+    {
+        bool cancelNow = false;
+        {
+            std::lock_guard<std::mutex> g(mu);
+            if (step == Step::Busy && cancel && !cancelSent) {
+                cancelNow = cancelSent = true;
+            } else {
+                if (step != Step::Ready || !(fn || task)) return;
+                out.swap(sendBuf);
+                step = Step::Busy;
+            }
+        }
+        if (cancelNow) {
+            if (task) task->cancel(callId);
+            return;
+        }
+        rant::SendStatus st;
+        auto done = [this](const rant::ResponseView<Bytes>& r) { Answered(r); };
+        if (fn) {
+            st = fn->call_async(View(sendBuf), done);
+        } else {
+            const rant::TaskCall call = task->call_async(View(sendBuf), [this](const rant::ProgressView<Bytes>& p) {
+                if (!p.has_value()) return;
+                const Bytes b = p.data();
+                std::lock_guard<std::mutex> g(mu);
+                progress.assign(b.data(), b.data() + b.size());
+                progressFresh = true;
+            }, done);
+            callId = call.id;
+            st = call.status;
+        }
+        if (st != rant::SendStatus::Ok) {
+            std::string why = Status("the call was refused", st);
+            std::lock_guard<std::mutex> g(mu);
+            fault = std::move(why);
+            step = Step::Failed;
+        }
+    }
+    void Drop(const char* why) override
+    {
+        {
+            std::lock_guard<std::mutex> g(mu);
+            if (step == Step::Busy) {
+                fault = why;
+                step = Step::Failed;
+            }
+        }
+        fn.reset();
+        task.reset();
+    }
+};
+
+std::unique_ptr<Record> NewRecord(Kind k)
+{
+    switch (k) {
+        case Kind::Publisher:          return std::make_unique<PublisherRecord>();
+        case Kind::Subscriber:         return std::make_unique<SubscriberRecord>();
+        case Kind::VariableDefinition:
+        case Kind::RemoteVariable:     return std::make_unique<VariableRecord>(k);
+        case Kind::FunctionDefinition:
+        case Kind::TaskDefinition:     return std::make_unique<ServeRecord>(k);
+        case Kind::RemoteFunction:
+        case Kind::RemoteTask:         return std::make_unique<CallRecord>(k);
+    }
+    return nullptr;
+}
+
+// The record as its family, or null when it is another.
+template <class T> T* As(Record* e) { return e && T::Holds(e->kind) ? static_cast<T*>(e) : nullptr; }
+
 // Makes the entity's Rant handle on node, or records why it cannot.
 void Build(rant::Node& node, Record& e)
 {
@@ -263,255 +578,11 @@ void Build(rant::Node& node, Record& e)
     for (int i = 0; i < e.Parts(); ++i)
         if (schema[i].empty()) return;
     try {
-        rant::Schema first = node.schema(schema[VALUE]);
-        switch (e.kind) {
-            case Kind::Publisher: {
-                // A block publishes on change, so a change must arrive and a late reader gets the last.
-                rant::Qos q = Catching();
-                q.keep_last = 1;
-                e.pub = node.publisher<Bytes>(e.name, q, first);
-                break;
-            }
-            case Kind::Subscriber:
-                e.sub = node.subscriber<Bytes>(e.name, [&e](const rant::MessageView& m) {
-                    const Bytes b = m.data();
-                    std::lock_guard<std::mutex> g(e.mu);
-                    e.in.assign(b.data(), b.data() + b.size());
-                    e.fresh = true;
-                    ++e.count;
-                }, Catching(), first);
-                break;
-            case Kind::FunctionDefinition:
-                e.fn = node.function_definition<Bytes, Bytes>(e.name, [&e](rant::Request<Bytes>& rq) {
-                    const Bytes b = rq.data();
-                    std::vector<uint8_t> request(b.data(), b.data() + b.size());
-                    rant::Deferred<Bytes> later = rq.defer();
-                    std::lock_guard<std::mutex> g(e.mu);
-                    e.calls.emplace_back(std::move(later), std::move(request));
-                }, rant::FunctionOptions{}, first, node.schema(schema[RESPONSE]));
-                break;
-            case Kind::RemoteFunction:
-                e.remote = node.remote_function<Bytes, Bytes>(e.name, rant::FunctionOptions{}, first,
-                                                              node.schema(schema[RESPONSE]));
-                break;
-            case Kind::VariableDefinition:
-            case Kind::RemoteVariable: {
-                const bool owner = e.kind == Kind::VariableDefinition;
-                rant::VariableOptions<Bytes> o;
-                if (owner && !value.empty()) o.initial = View(value);
-                if (owner) e.var = node.variable_definition<Bytes>(e.name, o, first);
-                else e.remoteVar = node.remote_variable<Bytes>(e.name, o, first);
-                e.Var()->on_change([&e, owner](const rant::VariableUpdate& u) {
-                    const Bytes b = u.value();
-                    std::lock_guard<std::mutex> g(e.mu);
-                    if (!owner && e.awaitEcho) {
-                        // The echo of the set ends the wait. A value before it is held for the deadline.
-                        const bool echo = b.size() == e.sendBuf.size() && std::equal(b.data(), b.data() + b.size(), e.sendBuf.data());
-                        e.awaitEcho = !echo;
-                        e.held = !echo;
-                        e.in.assign(b.data(), b.data() + b.size());
-                        e.fresh = false;
-                        return;
-                    }
-                    e.in.assign(b.data(), b.data() + b.size());
-                    // The owner's own sets come back here too, and only a write from elsewhere is news.
-                    e.fresh = !owner || u.source() != 0;
-                });
-                break;
-            }
-            case Kind::TaskDefinition: {
-                rant::TaskOptions o;
-                o.exclusive = true;
-                e.task = node.task_definition<Bytes, Bytes, Bytes>(e.name, [&e](rant::TaskRequest<Bytes, Bytes>& rq) {
-                    const Bytes b = rq.data();
-                    bool busy;
-                    {
-                        std::lock_guard<std::mutex> g(e.mu);
-                        busy = e.taskIn || e.stage != Stage::Idle;
-                        if (!busy) {
-                            e.in.assign(b.data(), b.data() + b.size());
-                            e.taskIn = rq.defer();
-                        }
-                    }
-                    if (busy) rq.fail("the task is busy");
-                }, o, first, node.schema(schema[PROGRESS]), node.schema(schema[RESPONSE]));
-                break;
-            }
-            case Kind::RemoteTask:
-                e.remoteTask = node.remote_task<Bytes, Bytes, Bytes>(e.name, rant::TaskOptions{}, first,
-                                                                     node.schema(schema[PROGRESS]),
-                                                                     node.schema(schema[RESPONSE]));
-                break;
-        }
-        std::lock_guard<std::mutex> g(e.mu);
-        e.error.clear();
-        if (e.kind == Kind::Publisher) e.resend = true;
+        e.Make(node, schema, value);
+        ClearError(e);
     } catch (const std::exception& ex) {
         e.Drop("the block's type changed");
         Fail(e, ex.what());
-    }
-}
-
-// The response handler of a call from a RemoteFunction or RemoteTask.
-void Answered(Record& e, const rant::ResponseView<Bytes>& r)
-{
-    const Bytes b = r.data();
-    std::string message;
-    if (!r.ok()) message = std::string(r.message());
-    std::lock_guard<std::mutex> g(e.mu);
-    // A call a reopen already ended has no one waiting for its answer.
-    if (e.stage != Stage::Busy) return;
-    if (r.ok()) {
-        e.in.assign(b.data(), b.data() + b.size());
-        e.stage = Stage::Done;
-    } else {
-        e.fault = std::move(message);
-        e.stage = Stage::Failed;
-    }
-}
-
-// Moves what the task queued onto the mesh.
-void Service(Record& e)
-{
-    switch (e.kind) {
-        case Kind::Publisher: {
-            {
-                std::lock_guard<std::mutex> g(e.mu);
-                if (e.stage != Stage::Ready || !e.pub) return;
-                e.out.swap(e.sendBuf);
-                e.stage = Stage::Idle;
-            }
-            const rant::SendStatus st = e.pub->send(View(e.sendBuf));
-            if (st == rant::SendStatus::Ok) {
-                std::lock_guard<std::mutex> g(e.mu);
-                ++e.count;
-                e.error.clear();
-            } else if (st == rant::SendStatus::NoTopic) {
-                // The value found no topic, so the block sends it again.
-                std::lock_guard<std::mutex> g(e.mu);
-                e.resend = true;
-            } else {
-                Fail(e, Status("a value was refused", st));
-            }
-            break;
-        }
-        case Kind::VariableDefinition:
-        case Kind::RemoteVariable: {
-            rant::VariableDefinition<Bytes>* var = e.Var();
-            {
-                std::lock_guard<std::mutex> g(e.mu);
-                if (e.stage != Stage::Ready || !var) return;
-                e.sendBuf = e.out;
-                e.stage = Stage::Sending;
-                if (e.kind == Kind::RemoteVariable) {
-                    e.awaitEcho = true;
-                    e.echoDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-                }
-            }
-            const rant::SendStatus st = var->set(View(e.sendBuf));
-            {
-                std::lock_guard<std::mutex> g(e.mu);
-                if (e.stage == Stage::Sending) e.stage = Stage::Idle;
-                if (st != rant::SendStatus::Ok) e.awaitEcho = false;
-            }
-            if (st == rant::SendStatus::Ok) ClearError(e);
-            else if (st != rant::SendStatus::NoTopic) Fail(e, Status("a write was refused", st));
-            break;
-        }
-        case Kind::FunctionDefinition: {
-            rant::Deferred<Bytes> call;
-            std::string reason;
-            {
-                std::lock_guard<std::mutex> g(e.mu);
-                if (e.stage != Stage::Answered) return;
-                call = std::move(e.current);
-                e.out.swap(e.sendBuf);
-                reason.swap(e.reason);
-                e.stage = Stage::Idle;
-            }
-            if (!reason.empty()) call.fail(reason);
-            else call.complete(View(e.sendBuf));
-            break;
-        }
-        case Kind::TaskDefinition: {
-            Stage stage;
-            bool sendProgress = false;
-            {
-                std::lock_guard<std::mutex> g(e.mu);
-                stage = e.stage;
-                if (stage == Stage::Waiting && e.progressFresh) {
-                    e.progress.swap(e.sendProgress);
-                    e.progressFresh = false;
-                    sendProgress = true;
-                }
-            }
-            if (stage == Stage::Waiting) {
-                // The task never touches the call it handed over, so it is used here unlocked.
-                if (sendProgress && !e.sendProgress.empty()) e.currentTask.progress(View(e.sendProgress));
-                if (e.currentTask.cancelled()) {
-                    std::lock_guard<std::mutex> g(e.mu);
-                    e.cancel = true;
-                }
-            } else if (stage == Stage::Answered) {
-                rant::PendingTask<Bytes, Bytes> call;
-                std::string reason;
-                bool cancelled;
-                {
-                    std::lock_guard<std::mutex> g(e.mu);
-                    call = std::move(e.currentTask);
-                    e.out.swap(e.sendBuf);
-                    reason.swap(e.reason);
-                    cancelled = e.cancel;
-                    e.cancel = false;
-                    e.stage = Stage::Idle;
-                }
-                if (!reason.empty()) call.fail(reason);
-                else if (cancelled) call.complete_cancelled({}, View(e.sendBuf));
-                else call.complete(View(e.sendBuf));
-            }
-            break;
-        }
-        case Kind::RemoteFunction:
-        case Kind::RemoteTask: {
-            bool cancel = false;
-            {
-                std::lock_guard<std::mutex> g(e.mu);
-                if (e.stage == Stage::Busy && e.cancel && !e.cancelSent) {
-                    cancel = e.cancelSent = true;
-                } else {
-                    if (e.stage != Stage::Ready || !(e.remote || e.remoteTask)) return;
-                    e.out.swap(e.sendBuf);
-                    e.stage = Stage::Busy;
-                }
-            }
-            if (cancel) {
-                if (e.remoteTask) e.remoteTask->cancel(e.callId);
-                return;
-            }
-            rant::SendStatus st;
-            auto done = [&e](const rant::ResponseView<Bytes>& r) { Answered(e, r); };
-            if (e.remote) {
-                st = e.remote->call_async(View(e.sendBuf), done);
-            } else {
-                const rant::TaskCall call = e.remoteTask->call_async(View(e.sendBuf), [&e](const rant::ProgressView<Bytes>& p) {
-                    if (!p.has_value()) return;
-                    const Bytes b = p.data();
-                    std::lock_guard<std::mutex> g(e.mu);
-                    e.progress.assign(b.data(), b.data() + b.size());
-                    e.progressFresh = true;
-                }, done);
-                e.callId = call.id;
-                st = call.status;
-            }
-            if (st != rant::SendStatus::Ok) {
-                std::string why = Status("the call was refused", st);
-                std::lock_guard<std::mutex> g(e.mu);
-                e.fault = std::move(why);
-                e.stage = Stage::Failed;
-            }
-            break;
-        }
-        case Kind::Subscriber: break;
     }
 }
 
@@ -615,7 +686,7 @@ void Run()
                     e->builtEpoch = epoch;
                     Build(*node, *e);
                 }
-                Service(*e);
+                e->Service();
             }
             int active = 0;
             for (const rant::Peer& p : node->reflection().peers()) active += p.active;
@@ -662,8 +733,6 @@ bool Encode(Record& e, int which, const uint8_t* data, int length)
     blocks::Encode(l, data, e.scratch);
     return true;
 }
-
-bool Is(const Record* e, Kind a, Kind b) { return e && (e->kind == a || e->kind == b); }
 
 } // namespace
 
@@ -723,8 +792,7 @@ int Entity(int kind, int handle, const char* name, size_t length)
         size_t slot = 0;
         while (slot < s.entities.size() && s.entities[slot]) ++slot;
         if (slot >= MAX_ENTITIES) return 0;
-        auto e = std::make_unique<Record>();
-        e->kind = static_cast<Kind>(kind);
+        std::unique_ptr<Record> e = NewRecord(static_cast<Kind>(kind));
         e->name.assign(name, length);
         if (slot == s.entities.size()) {
             s.entities.push_back(std::move(e));
@@ -790,15 +858,15 @@ void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample)
 
 int Publish(int handle, uint8_t* data, int length, bool send)
 {
-    Record* e = Find(handle);
-    if (!e || e->kind != Kind::Publisher || !Encode(*e, VALUE, data, length)) return 0;
+    PublisherRecord* e = As<PublisherRecord>(Find(handle));
+    if (!e || !Encode(*e, VALUE, data, length)) return 0;
     const bool changed = !e->hasLast || e->scratch != e->last;
     std::lock_guard<std::mutex> g(e->mu);
     if (send || changed || e->resend) {
         e->last = e->scratch;
         e->hasLast = true;
         e->out = e->scratch;
-        e->stage = Stage::Ready;
+        e->ready = true;
         e->resend = false;
         Wake();
     }
@@ -807,8 +875,8 @@ int Publish(int handle, uint8_t* data, int length, bool send)
 
 int Take(int handle, uint8_t* data, int length)
 {
-    Record* e = Find(handle);
-    if (!e || e->kind != Kind::Subscriber) return 0;
+    SubscriberRecord* e = As<SubscriberRecord>(Find(handle));
+    if (!e) return 0;
     const Layout& l = e->parts[VALUE];
     std::lock_guard<std::mutex> g(e->mu);
     int copied = 0;
@@ -826,29 +894,30 @@ int Take(int handle, uint8_t* data, int length)
 
 int Share(int handle, uint8_t* data, int length)
 {
-    Record* e = Find(handle);
-    if (!Is(e, Kind::VariableDefinition, Kind::RemoteVariable) || !Encode(*e, VALUE, data, length)) return 0;
+    using Send = VariableRecord::Send;
+    VariableRecord* e = As<VariableRecord>(Find(handle));
+    if (!e || !Encode(*e, VALUE, data, length)) return 0;
     const Layout& l = e->parts[VALUE];
     std::lock_guard<std::mutex> g(e->mu);
     // A remote starts from the owner's value, so its own first value is no change.
-    const bool baseline = !e->hasLast && e->kind == Kind::RemoteVariable;
+    const bool baseline = !e->hasLast && !e->Owner();
     if (!e->hasLast || e->scratch != e->last) {
         e->last = e->scratch;
         e->hasLast = true;
         if (!baseline) {
             e->out = e->scratch;
-            e->stage = Stage::Ready;
+            e->send = Send::Ready;
             Wake();
         }
     }
     // An echo that never came (the owner may skip a value) lets the held value through.
-    if (e->awaitEcho && std::chrono::steady_clock::now() >= e->echoDeadline) {
+    if (e->awaitEcho && Clock::now() >= e->echoDeadline) {
         e->awaitEcho = false;
         e->fresh = e->held;
         e->held = false;
     }
     // While the program's change is on its way, the mesh's value waits, since the change follows it.
-    if (!e->fresh || e->stage == Stage::Ready || e->stage == Stage::Sending) return e->count * 2;
+    if (!e->fresh || e->send != Send::Idle) return e->count * 2;
     e->fresh = false;
     if (e->in.empty()) return e->count * 2;
     if (!Decode(l, e->in.data(), e->in.size(), data)) {
@@ -867,24 +936,25 @@ int Share(int handle, uint8_t* data, int length)
 int Serve(int handle, uint8_t* request, int requestLength, uint8_t* progress, int progressLength,
           uint8_t* response, int responseLength, bool complete)
 {
-    Record* e = Find(handle);
-    if (!Is(e, Kind::FunctionDefinition, Kind::TaskDefinition)) return 0;
-    const bool task = e->kind == Kind::TaskDefinition;
+    using Hold = ServeRecord::Hold;
+    ServeRecord* e = As<ServeRecord>(Find(handle));
+    if (!e) return 0;
+    const bool task = e->IsTask();
     const Layout& req = e->parts[VALUE];
     if (!Fits(req, requestLength)) return 0;
-    Stage stage;
+    Hold hold;
     bool cancel;
     {
         std::lock_guard<std::mutex> g(e->mu);
-        stage = e->stage;
+        hold = e->hold;
         cancel = e->cancel;
     }
     // Only this task moves a call out of Waiting, so its values encode outside the lock.
-    if (stage == Stage::Waiting) {
+    if (hold == Hold::Waiting) {
         if (complete && Encode(*e, RESPONSE, response, responseLength)) {
             std::lock_guard<std::mutex> g(e->mu);
             e->out = e->scratch;
-            e->stage = Stage::Answered;
+            e->hold = Hold::Answered;
             ++e->count;
             Wake();
             return e->count * 8;
@@ -900,7 +970,7 @@ int Serve(int handle, uint8_t* request, int requestLength, uint8_t* progress, in
         return e->count * 8 + SERVE_HELD + (cancel ? SERVE_CANCEL : 0);
     }
     std::lock_guard<std::mutex> g(e->mu);
-    if (stage != Stage::Idle) return e->count * 8;
+    if (hold != Hold::Idle) return e->count * 8;
     if (task) {
         if (!e->taskIn) return e->count * 8;
         e->currentTask = std::move(*e->taskIn);
@@ -915,25 +985,25 @@ int Serve(int handle, uint8_t* request, int requestLength, uint8_t* progress, in
     // The node thread answers every call, since a Rant call from here could wait on its lock.
     if (!Decode(req, e->in.data(), e->in.size(), request)) {
         e->reason = "the request does not fit the PLC's Request";
-        e->stage = Stage::Answered;
+        e->hold = Hold::Answered;
         Wake();
         return e->count * 8;
     }
     // Progress goes out once the program changes it, not the last call's.
     if (task && Encode(*e, PROGRESS, progress, progressLength)) e->last = e->scratch;
     e->progressFresh = false;
-    e->stage = Stage::Waiting;
+    e->hold = Hold::Waiting;
     return e->count * 8 + SERVE_NEW + SERVE_HELD;
 }
 
 void Reject(int handle, const std::string& reason)
 {
-    Record* e = Find(handle);
-    if (!e || e->kind != Kind::TaskDefinition) return;
+    ServeRecord* e = As<ServeRecord>(Find(handle));
+    if (!e || !e->IsTask()) return;
     std::lock_guard<std::mutex> g(e->mu);
-    if (e->stage != Stage::Waiting) return;
+    if (e->hold != ServeRecord::Hold::Waiting) return;
     e->reason = reason.empty() ? "the PLC failed the task" : reason;
-    e->stage = Stage::Answered;
+    e->hold = ServeRecord::Hold::Answered;
     ++e->count;
     Wake();
 }
@@ -941,26 +1011,27 @@ void Reject(int handle, const std::string& reason)
 int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLength, uint8_t* progress,
          int progressLength, uint8_t* response, int responseLength)
 {
-    Record* e = Find(handle);
-    if (!Is(e, Kind::RemoteFunction, Kind::RemoteTask)) return 0;
+    using Step = CallRecord::Step;
+    CallRecord* e = As<CallRecord>(Find(handle));
+    if (!e) return 0;
     const bool rising = execute && !e->lastExecute;
     e->lastExecute = execute;
     const Layout& rsp = e->parts[RESPONSE];
     const bool encoded = rising && Encode(*e, VALUE, request, requestLength);
     std::lock_guard<std::mutex> g(e->mu);
-    if (encoded && (e->stage == Stage::Idle || e->stage == Stage::Done || e->stage == Stage::Failed)) {
+    if (encoded && (e->step == Step::Idle || e->step == Step::Done || e->step == Step::Failed)) {
         e->out = e->scratch;
         e->fault.clear();
         e->in.clear();
         e->cancel = e->cancelSent = false;
         e->progressFresh = false;
-        e->stage = Stage::Ready;
+        e->step = Step::Ready;
         Wake();
         return 1;
     }
-    switch (e->stage) {
-        case Stage::Ready:
-        case Stage::Busy:
+    switch (e->step) {
+        case Step::Ready:
+        case Step::Busy:
             if (cancel && !e->cancel) {
                 e->cancel = true;
                 Wake();
@@ -970,21 +1041,21 @@ int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLen
                 Decode(e->parts[PROGRESS], e->progress.data(), e->progress.size(), progress);
             }
             return 1;
-        case Stage::Done:
+        case Step::Done:
             if (!e->in.empty()) {
                 const bool fits = Fits(rsp, responseLength) && Decode(rsp, e->in.data(), e->in.size(), response);
                 e->in.clear();
                 if (!fits) {
                     e->fault = "the response does not fit the PLC's Response";
-                    e->stage = Stage::Failed;
+                    e->step = Step::Failed;
                     return 3;
                 }
                 ++e->count;
             }
-            if (!execute) e->stage = Stage::Idle;
+            if (!execute) e->step = Step::Idle;
             return 2;
-        case Stage::Failed:
-            if (!execute) e->stage = Stage::Idle;
+        case Step::Failed:
+            if (!execute) e->step = Step::Idle;
             return 3;
         default: return 0;
     }
