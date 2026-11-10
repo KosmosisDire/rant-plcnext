@@ -21,7 +21,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CPM_math_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../math-rant" CACHE PATH "Rant Math's source tree")
 CPMAddPackage(NAME math
   GITHUB_REPOSITORY KosmosisDire/rant-math
-  VERSION 0.0.4
+  VERSION 0.0.5
   EXCLUDE_FROM_ALL YES)
 
 # The eCLR glue plcncli generates from the C# blocks, the blocks and the mirror in src/.
