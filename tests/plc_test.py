@@ -1,10 +1,14 @@
 """The PC side of the PLC library test: every block against the RantTest program on the PLC."""
+import faulthandler
 import sys
 import threading
 import time
 
 import rant
 from rant.types import Double3, Pose, Quaternion
+
+# A whole run takes about three minutes, so a hang prints where every thread waits and ends the run.
+faulthandler.dump_traceback_later(300, exit=True)
 
 seen = {}
 lock = threading.Lock()
