@@ -1,0 +1,237 @@
+#include "blocks/layout.h"
+
+#include <cstring>
+
+namespace blocks {
+
+using plc::Member;
+using plc::Scalar;
+
+namespace {
+
+// The eCLR type codes of the elementary types, as eCLR reflection reports them on the PLC.
+Scalar ScalarOf(int code)
+{
+    switch (code) {
+        case 2:  return Scalar::Bool;
+        case 4:  return Scalar::I8;
+        case 5:  return Scalar::U8;
+        case 6:  return Scalar::I16;
+        case 7:  return Scalar::U16;
+        case 8:  return Scalar::I32;
+        case 9:  return Scalar::U32;
+        case 10: return Scalar::I64;
+        case 11: return Scalar::U64;
+        case 12: return Scalar::F32;
+        case 13: return Scalar::F64;
+        default: return Scalar::None;
+    }
+}
+
+// An IEC string is a 2 byte capacity, a 2 byte length, the characters, a nul and a pad byte.
+constexpr uint32_t IEC_STRING_HEAD = 4;
+
+uint32_t IecStringCap(uint32_t size) { return size > 6 ? size - 6 : 0; }
+
+bool ValidTypeName(const std::string& s)
+{
+    if (s.empty() || !((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z'))) return false;
+    for (char c : s)
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
+    return true;
+}
+
+// The member of one node, its offsets in the PLC's memory set and the wire's left for later.
+bool Build(const Layout& l, int index, Member& m, std::string& error)
+{
+    const Node& n = l.nodes[index];
+    m.plcOffset = n.offset;
+    if (n.flags & FLAG_STRING) {
+        m.form = Member::Form::String;
+        m.kind = Scalar::String;
+        m.strCap = static_cast<uint16_t>(IecStringCap(n.size));
+        return true;
+    }
+    if (n.flags & FLAG_ARRAY) {
+        const Node* elem = n.children.empty() ? nullptr : &l.nodes[n.children[0]];
+        const Scalar k = elem && elem->flags == 0 ? ScalarOf(elem->code) : Scalar::None;
+        if (k == Scalar::None) {
+            error = n.type + ": only an array of elementary values reaches the mesh";
+            return false;
+        }
+        m.form = Member::Form::Array;
+        m.kind = k;
+        m.standard = n.space == "Rant";
+        if (m.standard) m.typeName = n.type;
+        m.count = 1;
+        for (size_t i = 0; i + 1 < n.bounds.size(); i += 2) {
+            const uint32_t count = static_cast<uint32_t>(n.bounds[i + 1] - n.bounds[i] + 1);
+            m.dims.push_back({ n.bounds[i], count });
+            m.count *= count;
+        }
+        return true;
+    }
+    if (n.code != 17) {
+        m.kind = ScalarOf(n.code);
+        if (m.kind == Scalar::None) {
+            error = n.type + ": this type does not reach the mesh";
+            return false;
+        }
+        m.form = Member::Form::Scalar;
+        return true;
+    }
+    m.form = Member::Form::Struct;
+    m.standard = n.space == "Rant";
+    m.typeName = m.standard || ValidTypeName(n.type) ? n.type : "";
+    // IEC has no empty struct, so the library's Empty holds a placeholder Rant's has not.
+    if (m.standard && n.type == "Empty") return true;
+    std::vector<std::string> used;
+    for (int c : n.children) {
+        Member f;
+        if (!Build(l, c, f, error)) return false;
+        f.dslName = plc::SanitizeDslName(l.nodes[c].name, used);
+        m.fields.push_back(std::move(f));
+    }
+    return true;
+}
+
+void Put(const Member& m, const uint8_t* plc, uint8_t* wire)
+{
+    switch (m.form) {
+        case Member::Form::Scalar:
+        case Member::Form::Array:
+            std::memcpy(wire + m.offset, plc + m.plcOffset, m.size);
+            break;
+        case Member::Form::String: {
+            int16_t live = 0;
+            std::memcpy(&live, plc + m.plcOffset + 2, 2);
+            const uint16_t n = live < 0 ? 0 : live > m.strCap ? m.strCap : static_cast<uint16_t>(live);
+            std::memcpy(wire + m.offset, &n, 2);
+            std::memcpy(wire + m.offset + 2, plc + m.plcOffset + IEC_STRING_HEAD, n);
+            std::memset(wire + m.offset + 2 + n, 0, m.strCap - n);
+            break;
+        }
+        case Member::Form::Struct:
+            for (const Member& f : m.fields) Put(f, plc, wire);
+            break;
+        case Member::Form::Skipped: break;
+    }
+}
+
+// Writes an IEC string, cut at the capacity the PLC gave it.
+void PutIecString(uint8_t* at, uint32_t cap, const uint8_t* chars, size_t n)
+{
+    int16_t max = 0;
+    std::memcpy(&max, at, 2);
+    const size_t room = max > 0 && static_cast<uint32_t>(max) < cap ? static_cast<uint32_t>(max) : cap;
+    const int16_t live = static_cast<int16_t>(n < room ? n : room);
+    std::memcpy(at + 2, &live, 2);
+    std::memcpy(at + IEC_STRING_HEAD, chars, live);
+    at[IEC_STRING_HEAD + live] = 0;
+}
+
+bool Get(const Member& m, const uint8_t* wire, uint8_t* plc)
+{
+    switch (m.form) {
+        case Member::Form::Scalar:
+        case Member::Form::Array:
+            std::memcpy(plc + m.plcOffset, wire + m.offset, m.size);
+            return true;
+        case Member::Form::String: {
+            uint16_t n = 0;
+            std::memcpy(&n, wire + m.offset, 2);
+            if (n > m.strCap) return false;
+            PutIecString(plc + m.plcOffset, m.strCap, wire + m.offset + 2, n);
+            return true;
+        }
+        case Member::Form::Struct:
+            for (const Member& f : m.fields)
+                if (!Get(f, wire, plc)) return false;
+            return true;
+        case Member::Form::Skipped: return true;
+    }
+    return true;
+}
+
+} // namespace
+
+void Restart(Layout& l, uintptr_t type)
+{
+    l = Layout{};
+    l.type = type;
+}
+
+int AddNode(Layout& l, int parent, const char* name, const char* space, const char* type, uint32_t offset,
+            uint32_t size, int code, int flags)
+{
+    if (parent >= static_cast<int>(l.nodes.size()) || (parent < 0 && !l.nodes.empty())) return -1;
+    Node n;
+    n.parent = parent;
+    n.name = name ? name : "";
+    n.space = space ? space : "";
+    n.type = type ? type : "";
+    n.offset = offset;
+    n.size = size;
+    n.code = code;
+    n.flags = flags;
+    l.nodes.push_back(std::move(n));
+    const int index = static_cast<int>(l.nodes.size()) - 1;
+    if (parent >= 0) l.nodes[parent].children.push_back(index);
+    return index;
+}
+
+void AddBound(Layout& l, int node, const char* name, int32_t value)
+{
+    if (node < 0 || node >= static_cast<int>(l.nodes.size()) || !name) return;
+    // LB comes before UB in every dimension, so the pairs line up in the order they arrive.
+    if (name[0] == 'L' || name[0] == 'U') l.nodes[node].bounds.push_back(value);
+}
+
+void Finish(Layout& l)
+{
+    l.done = true;
+    if (l.nodes.empty()) { l.error = "the walk reported no type"; return; }
+    Member root;
+    if (!Build(l, 0, root, l.error)) return;
+    switch (root.form) {
+        case Member::Form::Struct: root.size = plc::AssignMemberOffsets(root.fields, 0); break;
+        case Member::Form::Scalar: root.size = static_cast<uint32_t>(plc::ScalarByteSize(root.kind)); break;
+        case Member::Form::Array:  root.size = root.count * static_cast<uint32_t>(plc::ScalarByteSize(root.kind)); break;
+        default: break;
+    }
+    l.root = std::move(root);
+    l.schema = plc::SchemaText(l.root);
+}
+
+void Encode(const Layout& l, const uint8_t* plc, std::vector<uint8_t>& wire)
+{
+    const Member& r = l.root;
+    if (r.form == Member::Form::String) {
+        int16_t live = 0;
+        std::memcpy(&live, plc + 2, 2);
+        const uint32_t n = live < 0 ? 0 : live > r.strCap ? r.strCap : static_cast<uint32_t>(live);
+        wire.resize(4 + n);
+        std::memcpy(wire.data(), &n, 4);
+        std::memcpy(wire.data() + 4, plc + IEC_STRING_HEAD, n);
+        return;
+    }
+    wire.assign(r.size, 0);
+    Put(r, plc, wire.data());
+}
+
+bool Decode(const Layout& l, const uint8_t* wire, size_t len, uint8_t* plc)
+{
+    const Member& r = l.root;
+    if (r.form == Member::Form::String) {
+        uint32_t n = 0;
+        if (len < 4) return false;
+        std::memcpy(&n, wire, 4);
+        if (n > len - 4) return false;
+        PutIecString(plc, r.strCap, wire + 4, n);
+        return true;
+    }
+    if (len != r.size) return false;
+    return Get(r, wire, plc);
+}
+
+} // namespace blocks

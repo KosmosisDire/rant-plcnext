@@ -1,0 +1,2 @@
+name        = "plcnext"
+description = "The PLCnext Engineer library Rant: blocks for topics, functions, variables and tasks, a mirror of every PLC variable, Rant's types and Rant Math"

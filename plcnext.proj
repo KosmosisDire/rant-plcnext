@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ProjectSettings xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns="http://www.phoenixcontact.com/schema/cliproject">
+  <Id>c40cf65f-54a1-48cf-988e-647b8857a2b8</Id>
+  <Version>4.0</Version>
+  <Name>Rant</Name>
+  <Type>snproject</Type>
+  <CSharpProjectPath>iec</CSharpProjectPath>
+  <Target>AXCF2152,2026.0.2 LTS (26.0.2.93)</Target>
+  <Target>AXCF3152,2026.0.1 LTS (26.0.1.68)</Target>
+</ProjectSettings>
