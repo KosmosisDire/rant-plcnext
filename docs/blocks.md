@@ -38,7 +38,8 @@ Writes the newest value of `Topic` into `Value`.
 ## FunctionDefinition
 
 Offers the function `Name`. `Called` is set for the cycle a call's `Request` arrives. The next
-call of the block answers with `Response`, or a later one while `Hold` is set.
+call of the block answers with `Response`, or a later one while `Hold` is set. One more call
+waits beside the one in hand, and a caller past that is told the function is busy.
 
 - `Name : STRING`, `Request : ANY`, `Response : ANY` (both in out), `Hold : BOOL`
 - `Called : BOOL`, `Count : DINT` answered, `Error`, `ErrorText`
@@ -67,7 +68,8 @@ from the mesh lands in `Value`.
 ## RemoteVariable
 
 The variable `Name` another node owns. Its value lands in `Value`, and a change the program
-makes to `Value` is written to the owner.
+makes to `Value` is written to the owner. A write while no owner is found sets `Error` and is not
+sent later, so write once `Received` was set.
 
 - `Name : STRING`, `Value : ANY` (in out)
 - `Received : BOOL` for the cycle a value lands, `Count : DINT`, `Error`, `ErrorText`

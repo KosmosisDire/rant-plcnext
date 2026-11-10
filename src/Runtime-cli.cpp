@@ -5,6 +5,8 @@
 #include "blocks/runtime.h"
 #include "mirror/mirror.h"
 
+#include <atomic>
+#include <mutex>
 #include <string>
 
 namespace {
@@ -92,7 +94,7 @@ Int32 __PInvoke__ Rant::Runtime::Serve(Int32 p0, UIntPtr p1, Int32 p2, UIntPtr p
 
 void __PInvoke__ Rant::Runtime::Reject(Int32 p0, pcoslib::IecString80* p1)
 {
-    blocks::Reject(p0, Text(p1));
+    blocks::Reject(p0, Chars80(p1), Length80(p1));
 }
 
 Int32 __PInvoke__ Rant::Runtime::Call(Int32 p0, Boolean p1, Boolean p2, UIntPtr p3, Int32 p4, UIntPtr p5, Int32 p6,
@@ -111,7 +113,12 @@ Boolean __PInvoke__ Rant::Runtime::Failed(Int32 p0, pcoslib::IecString80* p1)
 
 Int32 __PInvoke__ Rant::Runtime::Mirror(pcoslib::IecString80* p0, Boolean p1, Boolean p2, Int32 p3)
 {
-    // The one mirror's settings stay here, and the prefix is built again only when it changed.
+    // The one mirror's settings stay here, and the prefix is built again only when it changed. A
+    // second Mirror block in another task tries the lock and gives the last count meanwhile.
+    static std::mutex mu;
+    static std::atomic<int> shown{0};
+    std::unique_lock<std::mutex> g(mu, std::try_to_lock);
+    if (!g.owns_lock()) return shown;
     static plc::Config c;
     static std::string raw;
     if (raw.size() != Length80(p0) || raw.compare(0, raw.size(), Chars80(p0), raw.size()) != 0) {
@@ -123,7 +130,7 @@ Int32 __PInvoke__ Rant::Runtime::Mirror(pcoslib::IecString80* p0, Boolean p1, Bo
     c.publishLocals = p1;
     c.probeForcable = p2;
     c.structStringCap = static_cast<uint16_t>(p3 < 1 ? 1 : p3 > 4096 ? 4096 : p3);
-    return plc::Mirror(c);
+    return shown = plc::Mirror(c);
 }
 
 Boolean __PInvoke__ Rant::Runtime::MirrorFailed(pcoslib::IecString80* p0)

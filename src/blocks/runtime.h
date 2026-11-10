@@ -47,7 +47,7 @@ int Share(int handle, uint8_t* data, int length);
 int Serve(int handle, uint8_t* request, int requestLength, uint8_t* progress, int progressLength,
           uint8_t* response, int responseLength, bool complete);
 // TaskDefinition: fails the call in hand with reason.
-void Reject(int handle, const std::string& reason);
+void Reject(int handle, const char* reason, size_t length);
 // RemoteFunction and RemoteTask: 0 idle, 1 busy with progress written as it comes, 2 done with
 // response written, 3 failed. cancel asks the provider of a running task to stop.
 int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLength, uint8_t* progress,

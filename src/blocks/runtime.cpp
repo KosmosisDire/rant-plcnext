@@ -9,16 +9,16 @@
 #include <atomic>
 #include <cstring>
 #include <chrono>
-#include <condition_variable>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
 #include <vector>
 
+#include <poll.h>
 #include <pthread.h>
 #include <sched.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 
 namespace blocks {
@@ -44,11 +44,18 @@ constexpr auto MIRROR_WAIT = std::chrono::seconds(20);
 // The parts of an entity's value, as iec/Layout.cs numbers them.
 constexpr int VALUE = 0, RESPONSE = 1, PROGRESS = 2;
 
+// The longest reason a call fails with, an IEC STRING's capacity.
+constexpr size_t REASON_MAX = 80;
+
 // A node's topic slots: what the entities and the mirror need, and what an open grants. A task takes three.
 constexpr size_t SLOTS_BASE = 16, SLOTS_PER_ENTITY = 3;
 constexpr size_t GRANT_BASE = 32, GRANT_PER_ENTITY = 4, SLOTS_MAX = 65535;
 
-size_t SlotsNeeded(size_t entities, size_t mirror) { return SLOTS_BASE + SLOTS_PER_ENTITY * entities + mirror; }
+// Past the cap a reopen would gain nothing, so what is needed stops there and the extra topics fail.
+size_t SlotsNeeded(size_t entities, size_t mirror)
+{
+    return std::min(SLOTS_BASE + SLOTS_PER_ENTITY * entities + mirror, SLOTS_MAX);
+}
 size_t SlotsGranted(size_t entities, size_t mirror)
 {
     return std::min(GRANT_BASE + GRANT_PER_ENTITY * entities + mirror, SLOTS_MAX);
@@ -74,15 +81,19 @@ struct Record {
     std::vector<uint8_t> out;              // to the mesh: a value, a response or a request
     std::vector<uint8_t> in;               // from the mesh: a value, a request or a response
     bool                 fresh = false;    // in holds a value the task has not taken
-    int                  count = 0;
+    uint32_t             count = 0;        // wraps, as the block's Count does
     std::string          error;            // the handle: Build and refused sends, cleared by their success
     std::string          fault;            // the data: a value that does not fit, a call's failure
     // The node thread's copy of what it sends, so a swap with out keeps both capacities.
     std::vector<uint8_t> sendBuf;
 
+    bool                 unlogged = false; // error holds a reason the node thread has not logged yet
+
     // The node thread's side.
     uint64_t builtGen = 0;
     uint64_t builtEpoch = 0;
+    Clock::time_point buildAgainAt{};       // a Make that threw is tried again from then
+    bool freeing = false;                   // dropped by this pass, so it is freed under s.mu
 
     explicit Record(Kind k) : kind(k) {}
     virtual ~Record() = default;
@@ -124,8 +135,9 @@ struct State {
     std::thread             thread;
     std::atomic<bool>       running{false};
     std::atomic<bool>       stop{false};
-    std::condition_variable wake;
-    std::mutex              wakeMu;
+    // The task sets pending and writes the eventfd only when pending was clear, at most once a pass.
+    std::atomic<bool>       pending{false};
+    std::atomic<int>        wakeFd{-1};
     std::atomic<int>        peers{0};
     // A handle carries this run's generation, so one from before a restart finds nothing.
     uint32_t                generation = static_cast<uint32_t>(
@@ -147,7 +159,14 @@ std::string DefaultName()
     return out;
 }
 
-void Wake() { S().wake.notify_one(); }
+void Wake()
+{
+    State& s = S();
+    if (s.pending.exchange(true)) return;
+    const uint64_t one = 1;
+    const int fd = s.wakeFd.load();
+    if (fd >= 0) (void)!write(fd, &one, sizeof one);
+}
 
 // The slot of index, made when make is set. Under s.mu when it makes one.
 std::atomic<Record*>* Slot(size_t index, bool make)
@@ -171,6 +190,9 @@ Record* Find(int handle)
     Record* e = slot ? slot->load(std::memory_order_acquire) : nullptr;
     return e && !e->removed ? e : nullptr;
 }
+
+// count moved up by shift with room for the low bits, kept a positive int as the block reads it.
+int Packed(uint32_t count, int shift) { return static_cast<int>((count << shift) & 0x7fffffffu); }
 
 // The record's lock if it is free now. A task never waits on the node thread.
 std::unique_lock<std::mutex> Try(Record& e) { return std::unique_lock<std::mutex>(e.mu, std::try_to_lock); }
@@ -298,7 +320,8 @@ struct VariableRecord : Record {
         if (owner && !value.empty()) o.initial = View(value);
         if (owner) var = node.variable_definition<Bytes>(name, o, node.schema(schema[VALUE]));
         else remote = node.remote_variable<Bytes>(name, o, node.schema(schema[VALUE]));
-        Var()->on_change([this, owner](const rant::VariableUpdate& u) {
+        // A remote hears every owner value, since the echo of a set that changes nothing is one too.
+        auto heard = [this, owner](const rant::VariableUpdate& u) {
             const Bytes b = u.value();
             std::lock_guard<std::mutex> g(mu);
             if (!owner && awaitEcho) {
@@ -313,7 +336,9 @@ struct VariableRecord : Record {
             in.assign(b.data(), b.data() + b.size());
             // The owner's own sets come back here too, and only a write from elsewhere is news.
             fresh = !owner || u.source() != 0;
-        });
+        };
+        if (owner) Var()->on_change(heard);
+        else Var()->on_write(heard);
     }
     void Service() override
     {
@@ -323,6 +348,9 @@ struct VariableRecord : Record {
             if (send != Send::Ready || !v) return;
             sendBuf = out;
             send = Send::Sending;
+            // A mesh value that came before this set is older than it.
+            fresh = false;
+            held = false;
             if (!Owner()) {
                 awaitEcho = true;
                 echoDeadline = Clock::now() + std::chrono::seconds(1);
@@ -334,8 +362,10 @@ struct VariableRecord : Record {
             if (send == Send::Sending) send = Send::Idle;
             if (st != rant::SendStatus::Ok) awaitEcho = false;
         }
+        // A write the owner cannot get is not kept for later, since it would land stale.
         if (st == rant::SendStatus::Ok) ClearError(*this);
-        else if (st != rant::SendStatus::NoTopic) Fail(*this, Status("a write was refused", st));
+        else if (st == rant::SendStatus::NoTopic) Fail(*this, "no owner of " + name + ", the write was not applied");
+        else Fail(*this, Status("a write was refused", st));
     }
     void Drop(const char*) override
     {
@@ -349,10 +379,19 @@ struct ServeRecord : Record {
     enum class Hold { Idle, Waiting, Answered };
     Hold hold = Hold::Idle;
     bool cancel = false;                   // a cancel asked for the task in hand
-    std::string reason;                    // why the call in hand fails, empty to answer it
+    // Why the call in hand fails, empty to answer it. Fixed, so the task sets it without allocating.
+    char reason[REASON_MAX];
+    size_t reasonLength = 0;
+    void Because(const char* why, size_t length)
+    {
+        reasonLength = std::min(length, REASON_MAX);
+        std::memcpy(reason, why, reasonLength);
+    }
     std::vector<uint8_t> progress, sendProgress;
     bool progressFresh = false;
-    std::deque<std::pair<rant::Deferred<Bytes>, std::vector<uint8_t>>> calls;
+    // One call waits beside the one in hand and the next is refused busy, so a slow program never piles them up.
+    std::optional<rant::Deferred<Bytes>> callIn;
+    std::vector<uint8_t> callData;                           // callIn's request
     std::optional<rant::PendingTask<Bytes, Bytes>> taskIn;   // a task call not taken yet
     // The call the task holds. Only the node thread touches it once taken.
     rant::Deferred<Bytes>           current;
@@ -370,10 +409,16 @@ struct ServeRecord : Record {
         if (!IsTask()) {
             fn = node.function_definition<Bytes, Bytes>(name, [this](rant::Request<Bytes>& rq) {
                 const Bytes b = rq.data();
-                std::vector<uint8_t> request(b.data(), b.data() + b.size());
-                rant::Deferred<Bytes> later = rq.defer();
-                std::lock_guard<std::mutex> g(mu);
-                calls.emplace_back(std::move(later), std::move(request));
+                bool busy;
+                {
+                    std::lock_guard<std::mutex> g(mu);
+                    busy = callIn.has_value();
+                    if (!busy) {
+                        callData.assign(b.data(), b.data() + b.size());
+                        callIn = rq.defer();
+                    }
+                }
+                if (busy) rq.fail("the function is busy");
             }, rant::FunctionOptions{}, node.schema(schema[VALUE]), node.schema(schema[RESPONSE]));
             return;
         }
@@ -403,7 +448,8 @@ struct ServeRecord : Record {
                 if (hold != Hold::Answered) return;
                 call = std::move(current);
                 out.swap(sendBuf);
-                why.swap(reason);
+                why.assign(reason, reasonLength);
+                reasonLength = 0;
                 hold = Hold::Idle;
             }
             if (!why.empty()) call.fail(why);
@@ -436,7 +482,8 @@ struct ServeRecord : Record {
                 std::lock_guard<std::mutex> g(mu);
                 call = std::move(currentTask);
                 out.swap(sendBuf);
-                why.swap(reason);
+                why.assign(reason, reasonLength);
+                reasonLength = 0;
                 cancelled = cancel;
                 cancel = false;
                 hold = Hold::Idle;
@@ -451,22 +498,23 @@ struct ServeRecord : Record {
         rant::Deferred<Bytes> heldCall;
         rant::PendingTask<Bytes, Bytes> heldTask;
         std::optional<rant::PendingTask<Bytes, Bytes>> queuedTask;
-        std::deque<std::pair<rant::Deferred<Bytes>, std::vector<uint8_t>>> queued;
+        std::optional<rant::Deferred<Bytes>> queued;
         {
             std::lock_guard<std::mutex> g(mu);
             heldCall = std::move(current);
             heldTask = std::move(currentTask);
             queuedTask = std::move(taskIn);
             taskIn.reset();
-            queued.swap(calls);
+            queued = std::move(callIn);
+            callIn.reset();
             hold = Hold::Idle;
             cancel = false;
-            reason.clear();
+            reasonLength = 0;
         }
         heldCall.fail(why);
         heldTask.fail(why);
         if (queuedTask) queuedTask->fail(why);
-        for (auto& q : queued) q.first.fail(why);
+        if (queued) queued->fail(why);
         fn.reset();
         task.reset();
     }
@@ -587,8 +635,8 @@ std::unique_ptr<Record> NewRecord(Kind k)
 // The record as its family, or null when it is another.
 template <class T> T* As(Record* e) { return e && T::Holds(e->kind) ? static_cast<T*>(e) : nullptr; }
 
-// Makes the entity's Rant handle on node, or records why it cannot.
-void Build(rant::Node& node, Record& e)
+// Makes the entity's Rant handle on node, or records why it cannot. False when Make threw, to try again.
+bool Build(rant::Node& node, Record& e)
 {
     std::string schema[3];
     std::vector<uint8_t> value;
@@ -599,14 +647,17 @@ void Build(rant::Node& node, Record& e)
         value = e.out;
     }
     e.Drop("the block's type changed");
+    // A part not walked yet builds once its layout moves layoutGen, so there is nothing to retry.
     for (int i = 0; i < e.Parts(); ++i)
-        if (schema[i].empty()) return;
+        if (schema[i].empty()) return true;
     try {
         e.Make(node, schema, value);
         ClearError(e);
+        return true;
     } catch (const std::exception& ex) {
         e.Drop("the block's type changed");
         Fail(e, ex.what());
+        return false;
     }
 }
 
@@ -637,7 +688,10 @@ void Run()
     std::string name;
     name.reserve(128);
     std::vector<Record*> list, gone;
+    Clock::time_point peersAt{};
     while (!s.stop) {
+        // A wake from here on runs another pass, since this one may have read its record already.
+        s.pending.store(false);
         int domain = 0;
         uint64_t configGen = 0;
         std::optional<Clock::time_point> firstUse;
@@ -664,13 +718,14 @@ void Run()
         for (Record* e : list)
             if (e->removed) {
                 e->Drop("the block was removed");
+                e->freeing = true;
                 gone.push_back(e);
             }
         if (!gone.empty()) {
             list.erase(std::remove_if(list.begin(), list.end(), [](Record* e) { return e->removed.load(); }), list.end());
             std::lock_guard<std::mutex> g(s.mu);
             for (size_t i = 0; i < s.entities.size(); ++i)
-                if (s.entities[i] && std::find(gone.begin(), gone.end(), s.entities[i].get()) != gone.end()) {
+                if (s.entities[i] && s.entities[i]->freeing) {
                     Slot(i, false)->store(nullptr, std::memory_order_release);
                     s.entities[i].reset();
                 }
@@ -688,7 +743,7 @@ void Run()
                 slots = SlotsGranted(list.size(), mirrorSlots);
                 o.max_topics = static_cast<uint16_t>(slots);
                 node = std::make_shared<rant::Node>(name, o);
-                log::Attach(*node);
+                log::Attach(node);
                 log::ArpInfo("node " + name + " open in domain " + std::to_string(domain));
                 openGen = configGen;
                 ++epoch;
@@ -709,18 +764,32 @@ void Run()
                     std::lock_guard<std::mutex> g(e->mu);
                     stale = e->builtGen != e->layoutGen;
                 }
-                if (stale || e->builtEpoch != epoch) {
-                    e->builtEpoch = epoch;
-                    Build(*node, *e);
+                if (stale || (e->builtEpoch != epoch && now >= e->buildAgainAt)) {
+                    if (Build(*node, *e)) e->builtEpoch = epoch;
+                    else e->buildAgainAt = now + RETRY;
                 }
+                std::string unlogged;
+                {
+                    std::lock_guard<std::mutex> g(e->mu);
+                    if (e->unlogged) unlogged = e->error;
+                    e->unlogged = false;
+                }
+                if (!unlogged.empty()) log::ArpError(e->name + ": " + unlogged);
                 e->Service();
             }
-            int active = 0;
-            for (const rant::Peer& p : node->reflection().peers()) active += p.active;
-            s.peers = active;
+            if (now >= peersAt) {
+                int active = 0;
+                for (const rant::Peer& p : node->reflection().peers()) active += p.active;
+                s.peers = active;
+                peersAt = now + std::chrono::seconds(1);
+            }
         }
-        std::unique_lock<std::mutex> lk(s.wakeMu);
-        s.wake.wait_for(lk, IDLE_WAKE);
+        if (!s.pending.load()) {
+            pollfd p{ s.wakeFd.load(), POLLIN, 0 };
+            poll(&p, 1, static_cast<int>(IDLE_WAKE.count()));
+        }
+        uint64_t drained;
+        (void)!read(s.wakeFd.load(), &drained, sizeof drained);
     }
     for (auto& e : s.entities)
         if (e) e->Drop("the node closed");
@@ -737,6 +806,7 @@ void Touch()
     bool expected = false;
     if (s.running.compare_exchange_strong(expected, true)) {
         s.stop = false;
+        s.wakeFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
         s.thread = std::thread(Run);
     }
 }
@@ -866,14 +936,19 @@ void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample)
     if (!l) return;
     l->type = type;
     Finish(*l, sample);
-    if (!l->error.empty()) {
-        Fail(*e, l->error);
-        return;
-    }
     std::unique_lock<std::mutex> g = Try(*e);
     if (!g.owns_lock()) {
         // The block walks the type again next cycle.
         l->done = false;
+        return;
+    }
+    if (!l->error.empty()) {
+        // Once per type: the copy allocates, and the node thread logs it.
+        if (e->error != l->error) {
+            e->error = l->error;
+            e->unlogged = true;
+            Wake();
+        }
         return;
     }
     e->schema[which] = l->schema;
@@ -906,7 +981,7 @@ int Publish(int handle, uint8_t* data, int length, bool send)
         e->sendAsked = false;
         Wake();
     }
-    return e->shown = e->count;
+    return e->shown = Packed(e->count, 0);
 }
 
 int Take(int handle, uint8_t* data, int length)
@@ -926,7 +1001,7 @@ int Take(int handle, uint8_t* data, int length)
             e->fault = "a value arrived that does not fit Value";
         }
     }
-    return e->shown = e->count * 2 + copied;
+    return e->shown = Packed(e->count, 1) + copied;
 }
 
 int Share(int handle, uint8_t* data, int length)
@@ -955,20 +1030,20 @@ int Share(int handle, uint8_t* data, int length)
         e->held = false;
     }
     // While the program's change is on its way, the mesh's value waits, since the change follows it.
-    if (!e->fresh || e->send != Send::Idle) return e->shown = e->count * 2;
+    if (!e->fresh || e->send != Send::Idle) return e->shown = Packed(e->count, 1);
     e->fresh = false;
-    if (e->in.empty()) return e->shown = e->count * 2;
+    if (e->in.empty()) return e->shown = Packed(e->count, 1);
     if (!Decode(l, e->in.data(), e->in.size(), data)) {
         e->fault = "a value arrived that does not fit Value";
-        return e->shown = e->count * 2;
+        return e->shown = Packed(e->count, 1);
     }
     e->fault.clear();
     blocks::Encode(l, data, e->scratch);
-    if (e->scratch == e->last) return e->shown = e->count * 2;
+    if (e->scratch == e->last) return e->shown = Packed(e->count, 1);
     e->last = e->scratch;
     e->out = e->scratch;
     ++e->count;
-    return e->shown = e->count * 2 + 1;
+    return e->shown = Packed(e->count, 1) + 1;
 }
 
 int Serve(int handle, uint8_t* request, int requestLength, uint8_t* progress, int progressLength,
@@ -984,12 +1059,17 @@ int Serve(int handle, uint8_t* request, int requestLength, uint8_t* progress, in
     std::unique_lock<std::mutex> g = Try(*e);
     if (!g.owns_lock()) return e->shown & ~SERVE_NEW;
     if (e->hold == Hold::Waiting) {
-        if (complete && Encode(*e, RESPONSE, response, responseLength)) {
-            e->out = e->scratch;
+        if (complete) {
+            if (Encode(*e, RESPONSE, response, responseLength)) {
+                e->out = e->scratch;
+            } else {
+                static const char why[] = "the PLC's Response cannot be sent";
+                e->Because(why, sizeof why - 1);
+            }
             e->hold = Hold::Answered;
             ++e->count;
             Wake();
-            return e->shown = e->count * 8;
+            return e->shown = Packed(e->count, 3);
         }
         if (task && Encode(*e, PROGRESS, progress, progressLength) && e->scratch != e->last) {
             e->last = e->scratch;
@@ -997,42 +1077,46 @@ int Serve(int handle, uint8_t* request, int requestLength, uint8_t* progress, in
             e->progressFresh = true;
             Wake();
         }
-        return e->shown = e->count * 8 + SERVE_HELD + (e->cancel ? SERVE_CANCEL : 0);
+        return e->shown = Packed(e->count, 3) + SERVE_HELD + (e->cancel ? SERVE_CANCEL : 0);
     }
-    if (e->hold != Hold::Idle) return e->shown = e->count * 8;
+    if (e->hold != Hold::Idle) return e->shown = Packed(e->count, 3);
     if (task) {
-        if (!e->taskIn) return e->shown = e->count * 8;
+        if (!e->taskIn) return e->shown = Packed(e->count, 3);
         e->currentTask = std::move(*e->taskIn);
         e->taskIn.reset();
     } else {
-        if (e->calls.empty()) return e->shown = e->count * 8;
-        e->current = std::move(e->calls.front().first);
-        e->in = std::move(e->calls.front().second);
-        e->calls.pop_front();
+        if (!e->callIn) return e->shown = Packed(e->count, 3);
+        e->current = std::move(*e->callIn);
+        e->callIn.reset();
+        // A swap keeps both buffers, so the task frees nothing.
+        e->in.swap(e->callData);
     }
     e->cancel = false;
     // The node thread answers every call, since a Rant call from here could wait on its lock.
     if (!Decode(req, e->in.data(), e->in.size(), request)) {
-        e->reason = "the request does not fit the PLC's Request";
+        static const char why[] = "the request does not fit the PLC's Request";
+        e->Because(why, sizeof why - 1);
         e->hold = Hold::Answered;
         Wake();
-        return e->shown = e->count * 8;
+        return e->shown = Packed(e->count, 3);
     }
     // Progress goes out once the program changes it, not the last call's.
     if (task && Encode(*e, PROGRESS, progress, progressLength)) e->last = e->scratch;
     e->progressFresh = false;
     e->hold = Hold::Waiting;
-    return e->shown = e->count * 8 + SERVE_NEW + SERVE_HELD;
+    return e->shown = Packed(e->count, 3) + SERVE_NEW + SERVE_HELD;
 }
 
-void Reject(int handle, const std::string& reason)
+void Reject(int handle, const char* reason, size_t length)
 {
     ServeRecord* e = As<ServeRecord>(Find(handle));
     if (!e || !e->IsTask()) return;
     // Fail is held while the task runs, so a cycle the lock missed rejects on the next.
     std::unique_lock<std::mutex> g = Try(*e);
     if (!g.owns_lock() || e->hold != ServeRecord::Hold::Waiting) return;
-    e->reason = reason.empty() ? "the PLC failed the task" : reason;
+    static const char failed[] = "the PLC failed the task";
+    if (length) e->Because(reason, length);
+    else e->Because(failed, sizeof failed - 1);
     e->hold = ServeRecord::Hold::Answered;
     ++e->count;
     Wake();
@@ -1140,8 +1224,11 @@ void Shutdown()
     State& s = S();
     if (!s.running) return;
     s.stop = true;
+    // The thread must hear this one, even with a wake already pending.
+    s.pending = false;
     Wake();
     if (s.thread.joinable()) s.thread.join();
+    close(s.wakeFd.exchange(-1));
     std::lock_guard<std::mutex> g(s.mu);
     // No task runs at unload, so the slots go with their records.
     for (auto& c : s.chunks) delete[] c.exchange(nullptr);

@@ -4,6 +4,7 @@
 
 #include "rant.hpp"
 
+#include <memory>
 #include <string>
 
 namespace plc::log {
@@ -15,7 +16,7 @@ void ArpInfo(const std::string& message);
 void ArpError(const std::string& message);
 
 // Route Info/Error to `node` and flush anything queued so far.
-void Attach(rant::Node& node);
+void Attach(const std::shared_ptr<rant::Node>& node);
 // Stop routing (the node is about to be destroyed).
 void Detach();
 // Drop queued messages that no longer have a node to go to.
