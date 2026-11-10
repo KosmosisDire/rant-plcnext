@@ -17,8 +17,6 @@ namespace Rant
         public IecString80 Name;
         [Input, DataType("INT")]
         public short Domain;
-        [Output, DataType("DINT")]
-        public int Peers;
         [Output]
         public bool Error;
         [Output, DataType("STRING")]
@@ -36,9 +34,7 @@ namespace Rant
         [Execution]
         public void __Process()
         {
-            int peers = Runtime.Configure(ref owner, ref Name, Domain, ref ErrorText);
-            Error = peers < 0;
-            Peers = Error ? 0 : peers;
+            Error = Runtime.Configure(ref owner, ref Name, Domain, ref ErrorText) < 0;
         }
     }
 }

@@ -18,8 +18,8 @@ enum class Kind : int {
     VariableDefinition = 5, RemoteVariable = 6, TaskDefinition = 7, RemoteTask = 8, Status = 9
 };
 
-// The node's name and domain, reopening it when either changes. Returns the peers it sees, or -1
-// when another Node block names it otherwise, as it did last call while it cannot tell (refused).
+// The node's name and domain, reopening it when either changes. Returns 0, or -1 when another Node
+// block names it otherwise, as it did last call while it cannot tell (refused).
 // owner starts at 0 and a call sets it.
 int Configure(int& owner, const char* name, size_t length, int domain, bool refused);
 

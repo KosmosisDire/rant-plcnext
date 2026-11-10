@@ -157,7 +157,6 @@ struct State {
     // The task sets pending and writes the eventfd only when pending was clear, at most once a pass.
     std::atomic<bool>       pending{false};
     std::atomic<int>        wakeFd{-1};
-    std::atomic<int>        peers{0};
     // A handle carries this run's generation, so one from before a restart finds nothing.
     uint32_t                generation = static_cast<uint32_t>(
         std::chrono::system_clock::now().time_since_epoch().count() & 0x7fff) | 1;
@@ -793,7 +792,6 @@ void Run()
     std::string name;
     name.reserve(128);
     std::vector<Record*> list, gone;
-    Clock::time_point peersAt{};
     while (!s.stop) {
         // A wake from here on runs another pass, since this one may have read its record already.
         s.pending.store(false);
@@ -910,12 +908,6 @@ void Run()
                     for (Record* e : list)
                         if (StatusRecord* c = As<StatusRecord>(e); c && c->name == key) c->ClearedElsewhere();
             }
-            if (now >= peersAt) {
-                int active = 0;
-                for (const rant::Peer& p : node->reflection().peers()) active += p.active;
-                s.peers = active;
-                peersAt = now + std::chrono::seconds(1);
-            }
         }
         if (!s.pending.load()) {
             pollfd p{ s.wakeFd.load(), POLLIN, 0 };
@@ -985,7 +977,7 @@ int Configure(int& owner, const char* name, size_t length, int domain, bool wasR
         std::unique_lock<std::mutex> g(s.mu, std::try_to_lock);
         if (!g.owns_lock()) {
             Touch();
-            return wasRefused ? -1 : s.peers.load();
+            return wasRefused ? -1 : 0;
         }
         if (owner == 0) owner = ++s.nodeIds;
         const Clock::time_point now = Clock::now();
@@ -1004,7 +996,7 @@ int Configure(int& owner, const char* name, size_t length, int domain, bool wasR
         }
     }
     Touch();
-    return refused ? -1 : s.peers.load();
+    return refused ? -1 : 0;
 }
 
 int Entity(int kind, int handle, const char* name, size_t length)

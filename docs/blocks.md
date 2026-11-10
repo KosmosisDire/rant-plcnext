@@ -19,7 +19,6 @@ Names the shared node, in domain 0 unless `Domain` says otherwise. A change of e
 The first Node block to run names it. Another one naming it otherwise sets `Error`.
 
 - `Name : STRING`, `Domain : INT`
-- `Peers : DINT`, the nodes it sees
 - `Error : BOOL`, `ErrorText : STRING`
 
 ## Publisher

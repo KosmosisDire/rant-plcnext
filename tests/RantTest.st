@@ -52,8 +52,6 @@ VAR
     name_sel : STRING;
     rename : BOOL;
     rename_def : VariableDefinition;
-    node_peers : DINT;
-    seen_peers : Publisher;
     other_node : Node;
     other_text : STRING;
     seen_other : Publisher;
@@ -184,8 +182,6 @@ ELSE
     name_sel := STRING#'plc_test';
 END_IF;
 node(Name := name_sel, Domain := INT#0);
-node_peers := node.Peers;
-seen_peers(Topic := STRING#'RantTest/Peers', Value := node_peers);
 (* A second Node block naming the node otherwise leaves it alone and sets Error. *)
 other_node(Name := STRING#'plc_other', Domain := INT#0);
 other_text := other_node.ErrorText;

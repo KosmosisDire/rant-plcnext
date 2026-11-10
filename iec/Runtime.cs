@@ -32,8 +32,8 @@ namespace Rant
     [Native]
     public class Runtime
     {
-        // Sets the node's name and domain, reopening it when either changes. Returns the peers it sees,
-        // or -1 with why in text when another Node block named it first.
+        // Sets the node's name and domain, reopening it when either changes. Returns 0, or -1 with why
+        // in text when another Node block named it first.
         public static int Configure(ref int owner, ref IecString80 name, int domain, ref IecString80 text)
         {
             return 0;

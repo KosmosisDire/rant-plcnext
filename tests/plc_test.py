@@ -23,7 +23,7 @@ for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("Rant
                      ("RantTest/RemoteResult", Double3), ("RantTest/PcModeSeen", "i32"),
                      ("RantTest/WaitResult", Double3), ("RantTest/WaitProgress", Double3),
                      ("RantTest/SlowError", "string"), ("RantTest/MirrorCount", "i32"),
-                     ("RantTest/MirrorError", "string"), ("RantTest/Peers", "i32"),
+                     ("RantTest/MirrorError", "string"),
                      ("RantTest/BadError", "bool"), ("RantTest/BadText", "string"),
                      ("RantTest/FailsText", "string"), ("RantTest/SleepText", "string"),
                      ("RantTest/SleepBusy", "bool"), ("RantTest/OtherNode", "string"),
@@ -198,10 +198,7 @@ with lock:
     check("Mirror, Variables counts the globals", bool(mcount) and mcount[-1] >= 30, mcount[-1:] if mcount else None)
     merr = seen.get("RantTest/MirrorError", [])
     check("Mirror, no error", not merr or merr[-1] == "", merr[-1:] if merr else None)
-# Node: Name and Peers, the PC is a peer of the PLC's node.
-with lock:
-    peers = list(seen.get("RantTest/Peers", []))
-check("Node, Peers counts the PC", bool(peers) and peers[-1] >= 1, peers[-3:])
+# Node: a second block naming the node otherwise.
 with lock:
     other = list(seen.get("RantTest/OtherNode", []))
 check("Node, a second name sets Error and leaves the node", bool(other) and "another Node block" in other[-1], other[-3:])
