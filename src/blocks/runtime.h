@@ -17,8 +17,9 @@ enum class Kind : int {
     VariableDefinition = 5, RemoteVariable = 6, TaskDefinition = 7, RemoteTask = 8
 };
 
-// The node's name and domain, reopening it when either changes. Returns the peers it sees.
-int Configure(const char* name, size_t length, int domain);
+// The node's name and domain, reopening it when either changes. Returns the peers it sees, or -1
+// when another Node block names it otherwise. owner starts at 0 and the first call sets it.
+int Configure(int& owner, const char* name, size_t length, int domain);
 
 // The entity of kind named name: handle while both still match, else a new one, 0 on failure.
 int Entity(int kind, int handle, const char* name, size_t length);

@@ -32,9 +32,15 @@ bool Report(const char* why, size_t length, pcoslib::IecString80* text)
 
 } // namespace
 
-Int32 __PInvoke__ Rant::Runtime::Configure(pcoslib::IecString80* p0, Int32 p1)
+Int32 __PInvoke__ Rant::Runtime::Configure(Int32* p0, pcoslib::IecString80* p1, Int32 p2, pcoslib::IecString80* p3)
 {
-    return blocks::Configure(Chars80(p0), Length80(p0), p1);
+    int owner = p0 ? *p0 : 0;
+    const int peers = blocks::Configure(owner, Chars80(p1), Length80(p1), p2);
+    if (p0) *p0 = owner;
+    static const char why[] = "another Node block names the node";
+    // The text is written only when it changes, so a block running fine copies nothing.
+    if ((peers < 0) != (p3 && p3->GetLength() != 0)) Report(why, peers < 0 ? sizeof why - 1 : 0, p3);
+    return peers;
 }
 
 Int32 __PInvoke__ Rant::Runtime::Entity(Int32 p0, Int32 p1, pcoslib::IecString80* p2)

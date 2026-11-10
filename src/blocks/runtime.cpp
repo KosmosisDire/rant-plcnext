@@ -166,6 +166,10 @@ struct State {
     std::string                          name;
     int                                  domain = 0;
     uint64_t                             configGen = 1;
+    // The Node block that names the node, so a second one cannot rename it every cycle.
+    int                                  nodeOwner = 0;
+    int                                  nodeIds = 0;
+    Clock::time_point                    ownerSeen;
     std::optional<Clock::time_point>     firstUse;
     size_t                               mirrorSlots = 0;
     bool                                 mirrorBrowsing = false;
@@ -674,19 +678,30 @@ void Demote()
     pthread_setaffinity_np(pthread_self(), sizeof all, &all);
 }
 
-int Configure(const char* name, size_t length, int domain)
+int Configure(int& owner, const char* name, size_t length, int domain)
 {
     State& s = S();
+    bool refused = false;
     {
         std::lock_guard<std::mutex> g(s.mu);
-        if (s.domain != domain || s.name.size() != length || std::memcmp(s.name.data(), name, length) != 0) {
-            s.name.assign(name, length);
-            s.domain = domain;
-            ++s.configGen;
+        if (owner == 0) owner = ++s.nodeIds;
+        const Clock::time_point now = Clock::now();
+        const bool same = s.domain == domain && s.name.size() == length && std::memcmp(s.name.data(), name, length) == 0;
+        // An owner that stopped running for a second hands the node to the next Node block.
+        if (s.nodeOwner != owner && s.nodeOwner != 0 && now - s.ownerSeen < std::chrono::seconds(1)) {
+            refused = !same;
+        } else {
+            s.nodeOwner = owner;
+            s.ownerSeen = now;
+            if (!same) {
+                s.name.assign(name, length);
+                s.domain = domain;
+                ++s.configGen;
+            }
         }
     }
     Touch();
-    return s.peers;
+    return refused ? -1 : s.peers.load();
 }
 
 int Entity(int kind, int handle, const char* name, size_t length)

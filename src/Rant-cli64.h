@@ -34,7 +34,7 @@ public:
     {
         // @Begin automatically generated code, do not modify inside @Begin/@End comment pair !
     public:
-        static Int32 Configure(pcoslib::IecString80* p0, Int32 p1);
+        static Int32 Configure(Int32* p0, pcoslib::IecString80* p1, Int32 p2, pcoslib::IecString80* p3);
         static Int32 Entity(Int32 p0, Int32 p1, pcoslib::IecString80* p2);
         static Boolean NeedsLayout(Int32 p0, Int32 p1, UIntPtr p2);
         static Int32 Field(Int32 p0, Int32 p1, Int32 p2, UIntPtr p3, UIntPtr p4, UIntPtr p5, Int32 p6, Int32 p7, Int32 p8, Int32 p9);

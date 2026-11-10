@@ -9,7 +9,7 @@ using Iec61131.Engineering.Prototypes.Variables;
 namespace Rant
 {
     // Names the node every Rant block of this PLC shares. Without one the node is plc_ and the
-    // host name, in domain 0.
+    // host name, in domain 0. A second Node block naming it otherwise sets Error.
     [FunctionBlock]
     public class Node
     {
@@ -19,17 +19,26 @@ namespace Rant
         public short Domain;
         [Output, DataType("DINT")]
         public int Peers;
+        [Output]
+        public bool Error;
+        [Output, DataType("STRING")]
+        public IecString80 ErrorText;
+
+        int owner;
 
         [Initialization]
         public void __Init()
         {
             Name.ctor();
+            ErrorText.ctor();
         }
 
         [Execution]
         public void __Process()
         {
-            Peers = Runtime.Configure(ref Name, Domain);
+            int peers = Runtime.Configure(ref owner, ref Name, Domain, ref ErrorText);
+            Error = peers < 0;
+            Peers = Error ? 0 : peers;
         }
     }
 }
