@@ -56,6 +56,7 @@ through Rant's Python binding. On a copy of an Engineer project:
    `src/globals/RantTest.st`, `tests/RantTestTypes.st` as `src/types/RantTest.st`, and `PROGRAM RantTestInstance WITH <task> : RantTest;` to
    `tasks.st`. For the math functions add `tests/RantMathTest.st` and
    `PROGRAM RantMathTestInstance WITH <task> : RantMathTest;` too.
+   The test names the node itself, so leave out the project's own Node block.
 2. Copy the new `bin/Rant.pcwlx` in, then build and deploy.
 3. `python tests/plc_test.py` prints one PASS or FAIL line per check. `python tests/math_test.py`
    checks each math answer against Rant Math's Python binding, which takes its library from
