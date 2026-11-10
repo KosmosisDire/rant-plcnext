@@ -23,9 +23,41 @@ for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("Rant
                      ("RantTest/RemoteResult", Double3), ("RantTest/PcModeSeen", "i32"),
                      ("RantTest/WaitResult", Double3), ("RantTest/WaitProgress", Double3),
                      ("RantTest/SlowError", "string"), ("RantTest/MirrorCount", "i32"),
-                     ("RantTest/MirrorError", "string")]:
+                     ("RantTest/MirrorError", "string"), ("RantTest/Peers", "i32"),
+                     ("RantTest/BadError", "bool"), ("RantTest/BadText", "string"),
+                     ("RantTest/FailsText", "string"), ("RantTest/SleepText", "string"),
+                     ("RantTest/SleepBusy", "bool")]:
     node.subscriber(name, schema, keep(name), reliable=True, catch_up=1)
 
+# The schema the PLC's Sample block walks to: named by the IEC type, fields as the IEC names, a
+# STRING[15] is string<15>. The enum and TIME widths are what the walk reported on the PLC.
+SAMPLE = """Inner
+{
+    a: i16,
+    b: f32,
+}
+Sample
+{
+    id: i32,
+    label: string<15>,
+    inner: Inner,
+    grid: i16[2][3],
+    phase: i16,
+    span: i32,
+}"""
+
+
+def fails(r):
+    raise Exception("the PC said no")
+
+
+def sleeps(r):
+    time.sleep(4)
+    return Double3(x=r.x)
+
+
+node.function_definition("RantTest/Fails", fails, Double3, Double3)
+node.function_definition("RantTest/Sleep", sleeps, Double3, Double3)
 doubled = []
 node.function_definition("RantTest/Double", lambda r: (doubled.append(r.x), Double3(x=r.x * 2, y=r.y, z=r.z))[1],
                          Double3, Double3)
@@ -58,6 +90,12 @@ node.task_definition("RantTest/Slow", slow_task, Double3, Double3, Double3)
 pose_in = node.publisher("RantTest/PoseIn", Pose, reliable=True, keep_last=1)
 text_in = node.publisher("RantTest/TextIn", "string", reliable=True, keep_last=1)
 echo = node.remote_function("RantTest/Echo", Double3, Double3)
+held = node.remote_function("RantTest/Held", Double3, Double3)
+sample_echo = node.remote_function("RantTest/SampleEcho", SAMPLE, SAMPLE)
+release = node.remote_variable("RantTest/Release", "bool")
+rename = node.remote_variable("RantTest/Rename", "bool")
+run_sleep = node.remote_variable("RantTest/RunSleep", "bool")
+node.subscriber("RantTest/Sample", SAMPLE, keep("RantTest/Sample"), reliable=True, catch_up=1)
 setpoint = node.remote_variable("RantTest/Setpoint", "f64")
 pc_mode = node.variable_definition("RantTest/PcMode", "i32", initial=3)
 count = node.remote_task("RantTest/Count", Double3, Double3, Double3)
@@ -154,5 +192,63 @@ with lock:
     check("Mirror, Variables counts the globals", bool(mcount) and mcount[-1] >= 30, mcount[-1:] if mcount else None)
     merr = seen.get("RantTest/MirrorError", [])
     check("Mirror, no error", not merr or merr[-1] == "", merr[-1:] if merr else None)
+# Node: Name and Peers, the PC is a peer of the PLC's node.
+with lock:
+    peers = list(seen.get("RantTest/Peers", []))
+check("Node, Peers counts the PC", bool(peers) and peers[-1] >= 1, peers[-3:])
+
+# Error and ErrorText: an empty topic, and a remote function the PC fails.
+with lock:
+    bad = list(seen.get("RantTest/BadError", []))
+    bad_text = list(seen.get("RantTest/BadText", []))
+    fails_text = list(seen.get("RantTest/FailsText", []))
+check("Publisher with no topic sets Error and ErrorText", bool(bad) and bad[-1] is True and bool(bad_text[-1:]) and bad_text[-1] != "",
+      f"{bad[-1:]} {bad_text[-1:]}")
+check("RemoteFunction failure reaches ErrorText", any("the PC said no" in t for t in fails_text), fails_text[-3:])
+
+# Types: a user struct with a nested struct, a string, a 2D array, an enum and a TIME.
+with lock:
+    samples = list(seen.get("RantTest/Sample", []))
+last = samples[-1] if samples else None
+check("User struct, nested struct and string", last is not None and last.id == 7 and last.label == "abc"
+      and last.inner.a == -3 and last.inner.b == 1.5, last)
+check("User struct, 2D array, enum and TIME", last is not None and last.grid[1][2] == 9 and last.phase == 1
+      and last.span == 1500, last)
+back = sample_echo.call(last, timeout=5.0) if last is not None else None
+check("User struct as a Request and Response", back is not None and back.value.id == 8 and back.value.label == "abc"
+      and back.value.grid[1][2] == 9, back.value if back is not None else None)
+
+# Hold: the call stays open until Release.
+held_result = []
+held.call_async(Double3(x=1.0), held_result.append)
+time.sleep(1.5)
+check("FunctionDefinition, Hold keeps the call open", not held_result, held_result)
+release.set(True)
+time.sleep(1.5)
+check("FunctionDefinition, Release answers it", bool(held_result) and held_result[0].value.x == 2.0,
+      held_result[0].value if held_result else None)
+
+# A reopen with calls in flight: a call the PLC serves, and a call the PLC makes.
+release.set(False)
+time.sleep(0.5)
+held_cut = []
+held.call_async(Double3(x=5.0), held_cut.append)
+run_sleep.set(True)
+time.sleep(1.0)
+rename.set(True)
+time.sleep(5)
+with lock:
+    sleep_text = list(seen.get("RantTest/SleepText", []))
+    sleep_busy = list(seen.get("RantTest/SleepBusy", []))
+check("Reopen ends a call the PLC serves", bool(held_cut) and held_cut[0].status != rant.CallStatus.OK,
+      held_cut[0].message if held_cut else "still open")
+check("Reopen fails a call the PLC makes", any("node reopened" in t for t in sleep_text) and sleep_busy[-1:] == [False],
+      f"{sleep_text[-3:]} busy {sleep_busy[-3:]}")
+run_sleep.set(False)
+const_late = []
+node.subscriber("RantTest/Const", "i32", const_late.append, reliable=True, catch_up=1)
+time.sleep(2)
+check("Publisher resends its constant after a reopen", 4242 in const_late, const_late[-3:])
+rename.set(False)
 node.close()
 sys.exit(0 if ok else 1)

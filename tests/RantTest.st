@@ -48,6 +48,44 @@ VAR
     slow_task : RemoteTask;
     seen_slow : Publisher;
     slow_error : STRING;
+    node : Node;
+    name_sel : STRING;
+    rename : BOOL;
+    rename_def : VariableDefinition;
+    node_peers : DINT;
+    seen_peers : Publisher;
+    const_value : DINT := DINT#4242;
+    const_pub : Publisher;
+    release : BOOL;
+    release_def : VariableDefinition;
+    held : FunctionDefinition;
+    held_request : Double3;
+    held_response : Double3;
+    bad_pub : Publisher;
+    bad_error : BOOL;
+    bad_text : STRING;
+    seen_bad : Publisher;
+    seen_bad_text : Publisher;
+    fails : RemoteFunction;
+    fails_go : BOOL;
+    fails_request : Double3;
+    fails_response : Double3;
+    fails_text : STRING;
+    seen_fails : Publisher;
+    sleeper : RemoteFunction;
+    sleep_go : BOOL;
+    sleep_def : VariableDefinition;
+    sleep_request : Double3;
+    sleep_response : Double3;
+    sleep_text : STRING;
+    sleep_busy : BOOL;
+    seen_sleep : Publisher;
+    seen_sleep_busy : Publisher;
+    sample_out : Sample;
+    sample_pub : Publisher;
+    sample_req : Sample;
+    sample_rsp : Sample;
+    sample_fn : FunctionDefinition;
     mirror : Mirror;
     mirror_count : DINT;
     mirror_error : STRING;
@@ -122,6 +160,63 @@ slow_task(Name := STRING#'RantTest/Slow', Execute := slow_go, Cancel := slow_tic
     Progress := slow_progress, Response := slow_response);
 slow_error := slow_task.ErrorText;
 seen_slow(Topic := STRING#'RantTest/SlowError', Value := slow_error);
+
+(* Node: the PC variable Rename moves the node from plc_test to plc_test2, which reopens it. *)
+rename_def(Name := STRING#'RantTest/Rename', Value := rename);
+IF rename THEN
+    name_sel := STRING#'plc_test2';
+ELSE
+    name_sel := STRING#'plc_test';
+END_IF;
+node(Name := name_sel, Domain := INT#0);
+node_peers := node.Peers;
+seen_peers(Topic := STRING#'RantTest/Peers', Value := node_peers);
+
+(* A constant value must reach a subscriber that joins later, also after a reopen. *)
+const_pub(Topic := STRING#'RantTest/Const', Value := const_value);
+
+(* Hold keeps a call unanswered until the PC sets Release. *)
+release_def(Name := STRING#'RantTest/Release', Value := release);
+held(Name := STRING#'RantTest/Held', Request := held_request, Response := held_response, Hold := NOT release);
+IF held.Called THEN
+    held_response.x := held_request.x + LREAL#1.0;
+END_IF;
+
+(* An empty topic sets Error and ErrorText. *)
+bad_pub(Topic := STRING#'', Value := cycles);
+bad_error := bad_pub.Error;
+bad_text := bad_pub.ErrorText;
+seen_bad(Topic := STRING#'RantTest/BadError', Value := bad_error);
+seen_bad_text(Topic := STRING#'RantTest/BadText', Value := bad_text);
+
+(* A remote function the PC fails: Error and its text hold until Execute falls. *)
+fails_go := (cycles MOD DINT#100) < DINT#50;
+fails(Name := STRING#'RantTest/Fails', Execute := fails_go, Request := fails_request, Response := fails_response);
+fails_text := fails.ErrorText;
+seen_fails(Topic := STRING#'RantTest/FailsText', Value := fails_text);
+
+(* A remote function that takes seconds, which a reopen of the node must end with an error. *)
+sleep_def(Name := STRING#'RantTest/RunSleep', Value := sleep_go);
+sleeper(Name := STRING#'RantTest/Sleep', Execute := sleep_go, Request := sleep_request, Response := sleep_response);
+sleep_text := sleeper.ErrorText;
+sleep_busy := sleeper.Busy;
+seen_sleep(Topic := STRING#'RantTest/SleepText', Value := sleep_text);
+seen_sleep_busy(Topic := STRING#'RantTest/SleepBusy', Value := sleep_busy);
+
+(* A user struct with a nested struct, a string, a two dimensional array, an enum and a TIME. *)
+sample_out.id := DINT#7;
+sample_out.label := STRING#'abc';
+sample_out.inner.a := INT#-3;
+sample_out.inner.b := REAL#1.5;
+sample_out.grid[1, 2] := INT#9;
+sample_out.phase := Phase#Active;
+sample_out.span := T#1500ms;
+sample_pub(Topic := STRING#'RantTest/Sample', Value := sample_out);
+sample_fn(Name := STRING#'RantTest/SampleEcho', Request := sample_req, Response := sample_rsp);
+IF sample_fn.Called THEN
+    sample_rsp := sample_req;
+    sample_rsp.id := sample_req.id + DINT#1;
+END_IF;
 
 (* Every global under the default prefix Plc. The PC writes mirrorProbe and reads mirrorEcho. *)
 mirror();
