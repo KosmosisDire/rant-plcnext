@@ -76,7 +76,13 @@ bool Build(const Layout& l, int index, const uint8_t* sample, Member& m, std::st
         return true;
     }
     if (n.flags & FLAG_ARRAY) {
+        // An array of arrays, the way an IEC program spells two dimensions, is one array of every dimension.
+        std::vector<const Node*> levels{ &n };
         const Node* elem = n.children.empty() ? nullptr : &l.nodes[n.children[0]];
+        while (elem && (elem->flags & FLAG_ARRAY)) {
+            levels.push_back(elem);
+            elem = elem->children.empty() ? nullptr : &l.nodes[elem->children[0]];
+        }
         const Scalar k = elem && elem->flags == 0 ? ScalarOf(elem->code) : Scalar::None;
         if (k == Scalar::None) {
             error = n.type + ": only an array of elementary values reaches the mesh";
@@ -86,19 +92,21 @@ bool Build(const Layout& l, int index, const uint8_t* sample, Member& m, std::st
         m.kind = k;
         m.standard = IsStandard(n);
         if (m.standard) m.typeName = n.type;
-        // Every dimension is a lower bound followed by its upper one.
-        bool paired = !n.bounds.empty() && n.bounds.size() % 2 == 0;
-        for (size_t i = 0; paired && i < n.bounds.size(); i += 2)
-            paired = n.boundKinds[i] == 'L' && n.boundKinds[i + 1] == 'U' && n.bounds[i + 1] >= n.bounds[i];
-        if (!paired) {
-            error = n.type + ": the bounds of the array could not be read";
-            return false;
-        }
         m.count = 1;
-        for (size_t i = 0; i + 1 < n.bounds.size(); i += 2) {
-            const uint32_t count = static_cast<uint32_t>(n.bounds[i + 1] - n.bounds[i] + 1);
-            m.dims.push_back({ n.bounds[i], count });
-            m.count *= count;
+        for (const Node* a : levels) {
+            // Every dimension is a lower bound followed by its upper one.
+            bool paired = !a->bounds.empty() && a->bounds.size() % 2 == 0;
+            for (size_t i = 0; paired && i < a->bounds.size(); i += 2)
+                paired = a->boundKinds[i] == 'L' && a->boundKinds[i + 1] == 'U' && a->bounds[i + 1] >= a->bounds[i];
+            if (!paired) {
+                error = a->type + ": the bounds of the array could not be read";
+                return false;
+            }
+            for (size_t i = 0; i + 1 < a->bounds.size(); i += 2) {
+                const uint32_t count = static_cast<uint32_t>(a->bounds[i + 1] - a->bounds[i] + 1);
+                m.dims.push_back({ a->bounds[i], count });
+                m.count *= count;
+            }
         }
         if (n.size < m.count * static_cast<uint32_t>(plc::ScalarByteSize(k))) {
             error = n.type + ": the array is smaller than its bounds say";
