@@ -79,6 +79,7 @@ struct Record {
     std::vector<uint8_t> scratch;          // a value as the wire spells it
     std::vector<uint8_t> last;             // the last value sent, or a variable's last known
     bool                 hasLast = false;
+    bool                 renamed = false;  // the block asks for another name after the node opened
     int                  shown = 0;        // the last answer to the block, given again while mu is busy
 
     // Shared with the node thread, under mu and held only for a copy. The task only tries mu.
@@ -122,6 +123,7 @@ struct State {
     std::vector<std::unique_ptr<Record>> entities;   // a freed slot is null and is reused
     std::atomic<std::atomic<Record*>*>   chunks[CHUNKS] = {};
     std::atomic<bool>                    touched{false};   // firstUse is set
+    std::atomic<bool>                    opened{false};    // the node opened once, so names are fixed
     std::atomic<size_t>                  total{0};   // entities.size(), readable without the lock
     size_t                               active = 0; // the entities no block has retired
     std::string                          name;
@@ -856,6 +858,7 @@ void Run()
                 log::ArpInfo("node " + name + " open in domain " + std::to_string(domain));
                 openGen = configGen;
                 ++epoch;
+                s.opened = true;
                 std::lock_guard<std::mutex> g(s.mu);
                 s.shared = node;
                 s.sharedEpoch = epoch;
@@ -1002,10 +1005,15 @@ int Configure(int& owner, const char* name, size_t length, int domain, bool wasR
 int Entity(int kind, int handle, const char* name, size_t length)
 {
     if (kind < static_cast<int>(Kind::Publisher) || kind > static_cast<int>(Kind::Status) || length == 0) return 0;
-    if (Record* e = Find(handle))
-        if (static_cast<int>(e->kind) == kind && e->name.size() == length && std::memcmp(e->name.data(), name, length) == 0)
-            return handle;
     State& s = S();
+    if (Record* e = Find(handle)) {
+        const bool same = e->name.size() == length && std::memcmp(e->name.data(), name, length) == 0;
+        // Once the node opened a block keeps its name, so a name switched each cycle makes no topic each time.
+        if (static_cast<int>(e->kind) == kind && (same || s.opened)) {
+            e->renamed = !same;
+            return handle;
+        }
+    }
     {
         std::lock_guard<std::mutex> g(s.mu);
         if (handle > 0 && static_cast<uint32_t>(handle >> 16) == s.generation) {
@@ -1387,6 +1395,12 @@ size_t Failure(int handle, char* out, size_t capacity)
     } else {
         g = Try(*e);
         if (!g.owns_lock()) return FAILURE_UNCHANGED;
+        if (e->renamed) {
+            static const char fixed[] = "the name is fixed once the node opens, use a block for each name";
+            const size_t n = std::min(sizeof fixed - 1, capacity);
+            std::memcpy(out, fixed, n);
+            return n;
+        }
         const std::string& why = e->error.empty() ? e->fault : e->error;
         text = why.data();
         length = why.size();
@@ -1414,6 +1428,7 @@ void Shutdown()
     s.active = 0;
     s.firstUse.reset();
     s.touched = false;
+    s.opened = false;
     s.name.clear();
     s.mirrorSlots = 0;
     s.mirrorBrowsing = false;

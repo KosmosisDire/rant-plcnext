@@ -5,6 +5,8 @@ Every block shares one node per PLC, and a block call never waits on the network
 - Put one `Node` block in a program to name the node. Without it the node is `plc_` and the host
   name.
 - An empty `Name` or `Topic` sets `Error` with a text.
+- A block's `Name` or `Topic` is fixed once the node opens: a change after sets `Error` and the block
+  keeps its first. To send to two topics, use two blocks.
 - `Error` and `ErrorText` clear when the cause does. A call that fails sets them until the next
   call.
 - Value pins (`Value`, `Request`, `Response`) take a variable, not a literal.
