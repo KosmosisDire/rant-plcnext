@@ -39,7 +39,7 @@ public:
         static Boolean NeedsLayout(Int32 p0, Int32 p1, UIntPtr p2);
         static Int32 Field(Int32 p0, Int32 p1, Int32 p2, UIntPtr p3, UIntPtr p4, UIntPtr p5, Int32 p6, Int32 p7, Int32 p8, Int32 p9);
         static void Bound(Int32 p0, Int32 p1, Int32 p2, UIntPtr p3, Int32 p4);
-        static void LayoutDone(Int32 p0, Int32 p1, UIntPtr p2);
+        static void LayoutDone(Int32 p0, Int32 p1, UIntPtr p2, UIntPtr p3);
         static Int32 Publish(Int32 p0, UIntPtr p1, Int32 p2, Boolean p3);
         static Int32 Take(Int32 p0, UIntPtr p1, Int32 p2);
         static Int32 Share(Int32 p0, UIntPtr p1, Int32 p2);
@@ -63,6 +63,8 @@ public:
         static void Double2Add(UIntPtr p0, UIntPtr p1, UIntPtr p2);
         static void Double2Subtract(UIntPtr p0, UIntPtr p1, UIntPtr p2);
         static void Double2Scale(UIntPtr p0, UIntPtr p1, UIntPtr p2);
+        static void Double2Divide(UIntPtr p0, UIntPtr p1, UIntPtr p2);
+        static void Double2Negate(UIntPtr p0, UIntPtr p1);
         static void Double2Multiply(UIntPtr p0, UIntPtr p1, UIntPtr p2);
         static void Double2Dot(UIntPtr p0, UIntPtr p1, UIntPtr p2);
         static void Double2Cross(UIntPtr p0, UIntPtr p1, UIntPtr p2);
@@ -84,6 +86,8 @@ public:
         static void Double3Add(UIntPtr p0, UIntPtr p1, UIntPtr p2);
         static void Double3Subtract(UIntPtr p0, UIntPtr p1, UIntPtr p2);
         static void Double3Scale(UIntPtr p0, UIntPtr p1, UIntPtr p2);
+        static void Double3Divide(UIntPtr p0, UIntPtr p1, UIntPtr p2);
+        static void Double3Negate(UIntPtr p0, UIntPtr p1);
         static void Double3Multiply(UIntPtr p0, UIntPtr p1, UIntPtr p2);
         static void Double3Dot(UIntPtr p0, UIntPtr p1, UIntPtr p2);
         static void Double3Cross(UIntPtr p0, UIntPtr p1, UIntPtr p2);
@@ -102,6 +106,8 @@ public:
         static void Double4Add(UIntPtr p0, UIntPtr p1, UIntPtr p2);
         static void Double4Subtract(UIntPtr p0, UIntPtr p1, UIntPtr p2);
         static void Double4Scale(UIntPtr p0, UIntPtr p1, UIntPtr p2);
+        static void Double4Divide(UIntPtr p0, UIntPtr p1, UIntPtr p2);
+        static void Double4Negate(UIntPtr p0, UIntPtr p1);
         static void Double4Dot(UIntPtr p0, UIntPtr p1, UIntPtr p2);
         static void Double4Length(UIntPtr p0, UIntPtr p1);
         static void Double4Normalize(UIntPtr p0, UIntPtr p1);

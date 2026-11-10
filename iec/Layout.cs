@@ -14,7 +14,7 @@ namespace Rant
             if (handle == 0) return false;
             if (!Runtime.NeedsLayout(handle, which, type)) return true;
             Walk(handle, which, -1, null, type, 0);
-            Runtime.LayoutDone(handle, which, type);
+            Runtime.LayoutDone(handle, which, type, (UIntPtr)value.pValue);
             return true;
         }
 

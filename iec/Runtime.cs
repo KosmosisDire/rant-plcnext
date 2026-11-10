@@ -62,8 +62,8 @@ namespace Rant
         {
         }
 
-        // The layout is whole: the entity turns it into a Rant schema.
-        public static void LayoutDone(int handle, int which, UIntPtr type)
+        // The layout is whole: the entity turns it into a Rant schema. data is the value's memory.
+        public static void LayoutDone(int handle, int which, UIntPtr type, UIntPtr data)
         {
         }
 
@@ -74,23 +74,21 @@ namespace Rant
         }
 
         // Subscriber: copies a value that arrived since the last call. Returns the values received
-        // as a negative count when this call copied one, so the block sees both in one call.
+        // times two, plus one when this call copied one.
         public static int Take(int handle, UIntPtr data, int length)
         {
             return 0;
         }
 
         // VariableDefinition and RemoteVariable: sends the value when the program changed it, else
-        // copies one that came from the mesh. Returns the values received times two, plus one when
-        // this call copied a value.
+        // copies one from the mesh. Returns the values received times two, plus one when it copied one.
         public static int Share(int handle, UIntPtr data, int length)
         {
             return 0;
         }
 
-        // FunctionDefinition and TaskDefinition: ends the call in hand with response when complete
-        // is set, sends progress when it changed, else hands the next request over. Returns the
-        // Kind.Serve bits plus the calls ended times eight.
+        // FunctionDefinition and TaskDefinition: answers the call in hand when complete is set, sends
+        // progress when it changed, else takes the next request. Returns Serve bits plus calls ended times 8.
         public static int Serve(int handle, UIntPtr request, int requestLength, UIntPtr progress, int progressLength,
             UIntPtr response, int responseLength, bool complete)
         {
@@ -102,9 +100,8 @@ namespace Rant
         {
         }
 
-        // RemoteFunction and RemoteTask: starts a call on execute, then reports 1 busy with progress
-        // written as it comes, 2 done with response written, 3 failed, 0 idle. cancel asks the
-        // provider of a running task to stop.
+        // RemoteFunction and RemoteTask: starts a call on execute, then reports 1 busy, 2 done with
+        // response written, 3 failed, 0 idle. cancel asks the provider of a running task to stop.
         public static int Call(int handle, bool execute, bool cancel, UIntPtr request, int requestLength,
             UIntPtr progress, int progressLength, UIntPtr response, int responseLength)
         {

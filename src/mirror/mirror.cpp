@@ -10,6 +10,7 @@
 
 #include "Arp/System/Rsc/ServiceManager.hpp"
 
+#include <cstring>
 #include <pthread.h>
 #include <sched.h>
 
@@ -356,11 +357,13 @@ int Mirror(const Config& cfg)
     return s.published;
 }
 
-std::string MirrorFailure()
+size_t MirrorFailure(char* out, size_t capacity)
 {
     State& s = M();
     std::lock_guard<std::mutex> g(s.mu);
-    return s.failure;
+    const size_t length = s.failure.size() < capacity ? s.failure.size() : capacity;
+    if (length) std::memcpy(out, s.failure.data(), length);
+    return length;
 }
 
 void StopMirror()

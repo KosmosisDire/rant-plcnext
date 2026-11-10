@@ -14,26 +14,32 @@ std::string Text(pcoslib::IecString80* s)
     return s ? std::string(s->Begin(), s->GetLength()) : std::string();
 }
 
+// The block calls these every cycle, so a name is compared in place and built only when it changed.
+const char* Chars80(pcoslib::IecString80* s) { return s ? s->Begin() : ""; }
+size_t Length80(pcoslib::IecString80* s) { return s ? static_cast<size_t>(s->GetLength()) : 0; }
+
 uint8_t* Bytes(UIntPtr p) { return reinterpret_cast<uint8_t*>(p); }
 const char* Chars(UIntPtr p) { return reinterpret_cast<const char*>(p); }
 
-// Writes why into text, cut to its 80 bytes, and returns whether there is a why.
-bool Report(const std::string& why, pcoslib::IecString80* text)
+constexpr size_t TEXT_MAX = 80;
+
+// Writes why into text and returns whether there is a why.
+bool Report(const char* why, size_t length, pcoslib::IecString80* text)
 {
-    if (text) text->Assign(why.c_str(), why.size() < 80 ? static_cast<unsigned>(why.size()) : 80u);
-    return !why.empty();
+    if (text) text->Assign(why, static_cast<unsigned>(length));
+    return length != 0;
 }
 
 } // namespace
 
 Int32 __PInvoke__ Rant::Runtime::Configure(pcoslib::IecString80* p0, Int32 p1)
 {
-    return blocks::Configure(Text(p0), p1);
+    return blocks::Configure(Chars80(p0), Length80(p0), p1);
 }
 
 Int32 __PInvoke__ Rant::Runtime::Entity(Int32 p0, Int32 p1, pcoslib::IecString80* p2)
 {
-    return blocks::Entity(p0, p1, Text(p2));
+    return blocks::Entity(p0, p1, Chars80(p2), Length80(p2));
 }
 
 Boolean __PInvoke__ Rant::Runtime::NeedsLayout(Int32 p0, Int32 p1, UIntPtr p2)
@@ -52,9 +58,9 @@ void __PInvoke__ Rant::Runtime::Bound(Int32 p0, Int32 p1, Int32 p2, UIntPtr p3, 
     blocks::Bound(p0, p1, p2, Chars(p3), p4);
 }
 
-void __PInvoke__ Rant::Runtime::LayoutDone(Int32 p0, Int32 p1, UIntPtr p2)
+void __PInvoke__ Rant::Runtime::LayoutDone(Int32 p0, Int32 p1, UIntPtr p2, UIntPtr p3)
 {
-    blocks::LayoutDone(p0, p1, p2);
+    blocks::LayoutDone(p0, p1, p2, Bytes(p3));
 }
 
 Int32 __PInvoke__ Rant::Runtime::Publish(Int32 p0, UIntPtr p1, Int32 p2, Boolean p3)
@@ -91,15 +97,21 @@ Int32 __PInvoke__ Rant::Runtime::Call(Int32 p0, Boolean p1, Boolean p2, UIntPtr 
 
 Boolean __PInvoke__ Rant::Runtime::Failed(Int32 p0, pcoslib::IecString80* p1)
 {
-    return Report(blocks::Failure(p0), p1);
+    char why[TEXT_MAX];
+    return Report(why, blocks::Failure(p0, why, TEXT_MAX), p1);
 }
 
 Int32 __PInvoke__ Rant::Runtime::Mirror(pcoslib::IecString80* p0, Boolean p1, Boolean p2, Int32 p3)
 {
-    plc::Config c;
-    c.prefix = Text(p0);
-    while (!c.prefix.empty() && c.prefix.front() == '/') c.prefix.erase(0, 1);
-    while (!c.prefix.empty() && c.prefix.back() == '/') c.prefix.pop_back();
+    // The one mirror's settings stay here, and the prefix is built again only when it changed.
+    static plc::Config c;
+    static std::string raw;
+    if (raw.size() != Length80(p0) || raw.compare(0, raw.size(), Chars80(p0), raw.size()) != 0) {
+        raw = Text(p0);
+        c.prefix = raw;
+        while (!c.prefix.empty() && c.prefix.front() == '/') c.prefix.erase(0, 1);
+        while (!c.prefix.empty() && c.prefix.back() == '/') c.prefix.pop_back();
+    }
     c.publishLocals = p1;
     c.probeForcable = p2;
     c.structStringCap = static_cast<uint16_t>(p3 < 1 ? 1 : p3 > 4096 ? 4096 : p3);
@@ -108,7 +120,8 @@ Int32 __PInvoke__ Rant::Runtime::Mirror(pcoslib::IecString80* p0, Boolean p1, Bo
 
 Boolean __PInvoke__ Rant::Runtime::MirrorFailed(pcoslib::IecString80* p0)
 {
-    return Report(plc::MirrorFailure(), p0);
+    char why[TEXT_MAX];
+    return Report(why, plc::MirrorFailure(why, TEXT_MAX), p0);
 }
 
 Rant::Runtime::Runtime()

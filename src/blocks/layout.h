@@ -21,9 +21,10 @@ struct Node {
     std::string      space, type;    // the eCLR namespace and type name
     uint32_t         offset = 0;     // absolute, in the PLC's memory
     uint32_t         size   = 0;
-    int              code   = 0;     // the eCLR type code: 2 BOOL to 13 LREAL, 17 a struct
+    int              code   = 0;     // the eCLR type code, see TypeCode in layout.cpp
     int              flags  = 0;
     std::vector<int32_t> bounds;     // an array's lower and upper bound per dimension
+    std::string          boundKinds; // 'L' or 'U' for each entry of bounds, in the order they came
     std::vector<int>     children;
 };
 
@@ -32,7 +33,7 @@ struct Layout {
     std::vector<Node> nodes;
     uintptr_t         type = 0;     // the eCLR type handle the nodes describe
     bool              done = false;
-    plc::Member    root;         // the value as Rant sees it, once done
+    plc::Member       root;         // the value as Rant sees it, once done
     std::string       schema;       // its schema text, once done
     std::string       error;        // why the type cannot reach the mesh, empty when it can
 };
@@ -44,8 +45,9 @@ int AddNode(Layout& l, int parent, const char* name, const char* space, const ch
             uint32_t size, int code, int flags);
 // Records one bound of an array node. The eCLR names them LB, UB, or LB0, UB0 per dimension.
 void AddBound(Layout& l, int node, const char* name, int32_t value);
-// Turns the walked nodes into the member tree and schema, or sets error.
-void Finish(Layout& l);
+// Turns the walked nodes into the member tree and schema, or sets error. sample is the value's
+// memory, where a string's real capacity is.
+void Finish(Layout& l, const uint8_t* sample);
 
 // The PLC's bytes as a Rant message.
 void Encode(const Layout& l, const uint8_t* plc, std::vector<uint8_t>& wire);

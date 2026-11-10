@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -31,6 +32,9 @@ using Bytes = rant::Bytes;
 
 // Blocks of the first cycles may come before the Node block that names the node, so the node
 // opens this long after the first block ran.
+// A handle holds its entity's index in 16 bits.
+constexpr size_t MAX_ENTITIES = 0xffff;
+
 constexpr auto OPEN_GRACE = std::chrono::milliseconds(500);
 constexpr auto RETRY      = std::chrono::seconds(2);
 constexpr auto IDLE_WAKE  = std::chrono::milliseconds(50);
@@ -40,12 +44,22 @@ constexpr auto MIRROR_WAIT = std::chrono::seconds(20);
 // The parts of an entity's value, as iec/Layout.cs numbers them.
 constexpr int VALUE = 0, RESPONSE = 1, PROGRESS = 2;
 
+// A node's topic slots: what the entities and the mirror need, and what an open grants. A task takes three.
+constexpr size_t SLOTS_BASE = 16, SLOTS_PER_ENTITY = 3;
+constexpr size_t GRANT_BASE = 32, GRANT_PER_ENTITY = 4, SLOTS_MAX = 65535;
+
+size_t SlotsNeeded(size_t entities, size_t mirror) { return SLOTS_BASE + SLOTS_PER_ENTITY * entities + mirror; }
+size_t SlotsGranted(size_t entities, size_t mirror)
+{
+    return std::min(GRANT_BASE + GRANT_PER_ENTITY * entities + mirror, SLOTS_MAX);
+}
+
 enum class Stage { Idle, Ready, Sending, Waiting, Answered, Busy, Done, Failed };
 
 struct Record {
     Kind        kind = Kind::Publisher;
     std::string name;
-    bool        removed = false;
+    std::atomic<bool> removed{false};   // retired by its block, the node thread frees it
 
     // The task's side: only the block's own task touches these.
     Layout               parts[3];
@@ -66,10 +80,14 @@ struct Record {
     bool                 cancel = false;   // a cancel asked for the call in hand
     Stage                stage = Stage::Idle;
     int                  count = 0;
-    std::string          error;
+    std::string          error;            // the handle: Build and refused sends, cleared by their success
+    std::string          fault;            // the data: a value that does not fit, a call's failure
+    bool                 resend = false;   // a Publisher sends its value again, since its handle is new
     std::string          reason;           // why the call in hand fails, empty to answer it
     std::deque<std::pair<rant::Deferred<Bytes>, std::vector<uint8_t>>> calls;
     std::optional<rant::PendingTask<Bytes, Bytes>> taskIn;   // a task call not taken yet
+    // The node thread's copies of what it sends, so a swap with out keeps both capacities.
+    std::vector<uint8_t> sendBuf, sendProgress;
     // The call the task holds. Only the node thread touches it once taken.
     rant::Deferred<Bytes>             current;
     rant::PendingTask<Bytes, Bytes>   currentTask;
@@ -88,8 +106,34 @@ struct Record {
     std::optional<rant::TaskDefinition<Bytes, Bytes, Bytes>> task;
     std::optional<rant::RemoteTask<Bytes, Bytes, Bytes>>     remoteTask;
 
-    void Drop()
+    // Ends the calls in hand with why, then releases the Rant handles. Node thread only.
+    void Drop(const char* why)
     {
+        rant::Deferred<Bytes> held;
+        rant::PendingTask<Bytes, Bytes> heldTask;
+        std::optional<rant::PendingTask<Bytes, Bytes>> queuedTask;
+        std::deque<std::pair<rant::Deferred<Bytes>, std::vector<uint8_t>>> queued;
+        {
+            std::lock_guard<std::mutex> g(mu);
+            held = std::move(current);
+            heldTask = std::move(currentTask);
+            queuedTask = std::move(taskIn);
+            taskIn.reset();
+            queued.swap(calls);
+            if ((kind == Kind::FunctionDefinition || kind == Kind::TaskDefinition) && stage != Stage::Idle) {
+                stage = Stage::Idle;
+                cancel = false;
+                reason.clear();
+            }
+            if ((kind == Kind::RemoteFunction || kind == Kind::RemoteTask) && stage == Stage::Busy) {
+                fault = why;
+                stage = Stage::Failed;
+            }
+        }
+        held.fail(why);
+        heldTask.fail(why);
+        if (queuedTask) queuedTask->fail(why);
+        for (auto& q : queued) q.first.fail(why);
         pub.reset(); sub.reset(); fn.reset(); remote.reset();
         var.reset(); remoteVar.reset(); task.reset(); remoteTask.reset();
     }
@@ -112,7 +156,9 @@ struct Record {
 
 struct State {
     std::mutex                           mu;    // the entity list and the configuration
-    std::vector<std::unique_ptr<Record>> entities;
+    std::vector<std::unique_ptr<Record>> entities;   // a freed slot is null and is reused
+    std::atomic<size_t>                  total{0};   // entities.size(), readable without the lock
+    size_t                               active = 0; // the entities no block has retired
     std::string                          name;
     int                                  domain = 0;
     uint64_t                             configGen = 1;
@@ -158,15 +204,25 @@ Record* Find(int handle)
     if (handle <= 0 || static_cast<uint32_t>(handle >> 16) != s.generation) return nullptr;
     const size_t index = static_cast<size_t>(handle & 0xffff) - 1;
     std::lock_guard<std::mutex> g(s.mu);
-    if (index >= s.entities.size() || s.entities[index]->removed) return nullptr;
+    if (index >= s.entities.size() || !s.entities[index] || s.entities[index]->removed) return nullptr;
     return s.entities[index].get();
 }
 
 void Fail(Record& e, const std::string& why)
 {
+    bool changed;
+    {
+        std::lock_guard<std::mutex> g(e.mu);
+        changed = e.error != why;
+        e.error = why;
+    }
+    if (changed) log::ArpError(e.name + ": " + why);
+}
+
+void ClearError(Record& e)
+{
     std::lock_guard<std::mutex> g(e.mu);
-    if (e.error != why) log::ArpError(e.name + ": " + why);
-    e.error = why;
+    if (!e.error.empty()) e.error.clear();
 }
 
 std::string Status(const char* what, rant::SendStatus st)
@@ -195,7 +251,7 @@ void Build(rant::Node& node, Record& e)
         e.builtGen = e.layoutGen;
         value = e.out;
     }
-    e.Drop();
+    e.Drop("the block's type changed");
     for (int i = 0; i < e.Parts(); ++i)
         if (schema[i].empty()) return;
     try {
@@ -234,7 +290,7 @@ void Build(rant::Node& node, Record& e)
             case Kind::RemoteVariable: {
                 const bool owner = e.kind == Kind::VariableDefinition;
                 rant::VariableOptions<Bytes> o;
-                if (owner) o.initial = View(value);
+                if (owner && !value.empty()) o.initial = View(value);
                 if (owner) e.var = node.variable_definition<Bytes>(e.name, o, first);
                 else e.remoteVar = node.remote_variable<Bytes>(e.name, o, first);
                 e.Var()->on_change([&e, owner](const rant::VariableUpdate& u) {
@@ -251,13 +307,16 @@ void Build(rant::Node& node, Record& e)
                 o.exclusive = true;
                 e.task = node.task_definition<Bytes, Bytes, Bytes>(e.name, [&e](rant::TaskRequest<Bytes, Bytes>& rq) {
                     const Bytes b = rq.data();
-                    std::lock_guard<std::mutex> g(e.mu);
-                    if (e.taskIn || e.stage != Stage::Idle) {
-                        rq.fail("the task is busy");
-                        return;
+                    bool busy;
+                    {
+                        std::lock_guard<std::mutex> g(e.mu);
+                        busy = e.taskIn || e.stage != Stage::Idle;
+                        if (!busy) {
+                            e.in.assign(b.data(), b.data() + b.size());
+                            e.taskIn = rq.defer();
+                        }
                     }
-                    e.in.assign(b.data(), b.data() + b.size());
-                    e.taskIn = rq.defer();
+                    if (busy) rq.fail("the task is busy");
                 }, o, first, node.schema(schema[PROGRESS]), node.schema(schema[RESPONSE]));
                 break;
             }
@@ -269,8 +328,9 @@ void Build(rant::Node& node, Record& e)
         }
         std::lock_guard<std::mutex> g(e.mu);
         e.error.clear();
+        if (e.kind == Kind::Publisher) e.resend = true;
     } catch (const std::exception& ex) {
-        e.Drop();
+        e.Drop("the block's type changed");
         Fail(e, ex.what());
     }
 }
@@ -279,12 +339,16 @@ void Build(rant::Node& node, Record& e)
 void Answered(Record& e, const rant::ResponseView<Bytes>& r)
 {
     const Bytes b = r.data();
+    std::string message;
+    if (!r.ok()) message = std::string(r.message());
     std::lock_guard<std::mutex> g(e.mu);
+    // A call a reopen already ended has no one waiting for its answer.
+    if (e.stage != Stage::Busy) return;
     if (r.ok()) {
         e.in.assign(b.data(), b.data() + b.size());
         e.stage = Stage::Done;
     } else {
-        e.error = std::string(r.message());
+        e.fault = std::move(message);
         e.stage = Stage::Failed;
     }
 }
@@ -294,18 +358,22 @@ void Service(Record& e)
 {
     switch (e.kind) {
         case Kind::Publisher: {
-            std::vector<uint8_t> value;
             {
                 std::lock_guard<std::mutex> g(e.mu);
                 if (e.stage != Stage::Ready || !e.pub) return;
-                value.swap(e.out);
+                e.out.swap(e.sendBuf);
                 e.stage = Stage::Idle;
             }
-            const rant::SendStatus st = e.pub->send(View(value));
+            const rant::SendStatus st = e.pub->send(View(e.sendBuf));
             if (st == rant::SendStatus::Ok) {
                 std::lock_guard<std::mutex> g(e.mu);
                 ++e.count;
-            } else if (st != rant::SendStatus::NoTopic) {
+                e.error.clear();
+            } else if (st == rant::SendStatus::NoTopic) {
+                // The value found no topic, so the block sends it again.
+                std::lock_guard<std::mutex> g(e.mu);
+                e.resend = true;
+            } else {
                 Fail(e, Status("a value was refused", st));
             }
             break;
@@ -313,80 +381,76 @@ void Service(Record& e)
         case Kind::VariableDefinition:
         case Kind::RemoteVariable: {
             rant::VariableDefinition<Bytes>* var = e.Var();
-            std::vector<uint8_t> value;
             {
                 std::lock_guard<std::mutex> g(e.mu);
                 if (e.stage != Stage::Ready || !var) return;
-                value = e.out;
+                e.sendBuf = e.out;
                 e.stage = Stage::Sending;
             }
-            const rant::SendStatus st = var->set(View(value));
+            const rant::SendStatus st = var->set(View(e.sendBuf));
             {
                 std::lock_guard<std::mutex> g(e.mu);
                 if (e.stage == Stage::Sending) e.stage = Stage::Idle;
-                // A value from the owner that came while the write was on its way is older than it.
-                if (e.kind == Kind::RemoteVariable) e.fresh = false;
             }
-            if (st != rant::SendStatus::Ok && st != rant::SendStatus::NoTopic) Fail(e, Status("a write was refused", st));
+            if (st == rant::SendStatus::Ok) ClearError(e);
+            else if (st != rant::SendStatus::NoTopic) Fail(e, Status("a write was refused", st));
             break;
         }
         case Kind::FunctionDefinition: {
             rant::Deferred<Bytes> call;
-            std::vector<uint8_t> answer;
             std::string reason;
             {
                 std::lock_guard<std::mutex> g(e.mu);
                 if (e.stage != Stage::Answered) return;
                 call = std::move(e.current);
-                answer.swap(e.out);
+                e.out.swap(e.sendBuf);
                 reason.swap(e.reason);
                 e.stage = Stage::Idle;
             }
             if (!reason.empty()) call.fail(reason);
-            else call.complete(View(answer));
+            else call.complete(View(e.sendBuf));
             break;
         }
         case Kind::TaskDefinition: {
             Stage stage;
-            std::vector<uint8_t> progress;
+            bool sendProgress = false;
             {
                 std::lock_guard<std::mutex> g(e.mu);
                 stage = e.stage;
                 if (stage == Stage::Waiting && e.progressFresh) {
-                    progress.swap(e.progress);
+                    e.progress.swap(e.sendProgress);
                     e.progressFresh = false;
+                    sendProgress = true;
                 }
             }
             if (stage == Stage::Waiting) {
                 // The task never touches the call it handed over, so it is used here unlocked.
-                if (!progress.empty()) e.currentTask.progress(View(progress));
+                if (sendProgress && !e.sendProgress.empty()) e.currentTask.progress(View(e.sendProgress));
                 if (e.currentTask.cancelled()) {
                     std::lock_guard<std::mutex> g(e.mu);
                     e.cancel = true;
                 }
             } else if (stage == Stage::Answered) {
                 rant::PendingTask<Bytes, Bytes> call;
-                std::vector<uint8_t> answer;
                 std::string reason;
                 bool cancelled;
                 {
                     std::lock_guard<std::mutex> g(e.mu);
                     call = std::move(e.currentTask);
-                    answer.swap(e.out);
+                    e.out.swap(e.sendBuf);
                     reason.swap(e.reason);
                     cancelled = e.cancel;
                     e.cancel = false;
                     e.stage = Stage::Idle;
                 }
                 if (!reason.empty()) call.fail(reason);
-                else if (cancelled) call.complete_cancelled({}, View(answer));
-                else call.complete(View(answer));
+                else if (cancelled) call.complete_cancelled({}, View(e.sendBuf));
+                else call.complete(View(e.sendBuf));
             }
             break;
         }
         case Kind::RemoteFunction:
         case Kind::RemoteTask: {
-            std::vector<uint8_t> request;
             bool cancel = false;
             {
                 std::lock_guard<std::mutex> g(e.mu);
@@ -394,7 +458,7 @@ void Service(Record& e)
                     cancel = e.cancelSent = true;
                 } else {
                     if (e.stage != Stage::Ready || !(e.remote || e.remoteTask)) return;
-                    request.swap(e.out);
+                    e.out.swap(e.sendBuf);
                     e.stage = Stage::Busy;
                 }
             }
@@ -405,9 +469,9 @@ void Service(Record& e)
             rant::SendStatus st;
             auto done = [&e](const rant::ResponseView<Bytes>& r) { Answered(e, r); };
             if (e.remote) {
-                st = e.remote->call_async(View(request), done);
+                st = e.remote->call_async(View(e.sendBuf), done);
             } else {
-                const rant::TaskCall call = e.remoteTask->call_async(View(request), [&e](const rant::ProgressView<Bytes>& p) {
+                const rant::TaskCall call = e.remoteTask->call_async(View(e.sendBuf), [&e](const rant::ProgressView<Bytes>& p) {
                     if (!p.has_value()) return;
                     const Bytes b = p.data();
                     std::lock_guard<std::mutex> g(e.mu);
@@ -418,8 +482,9 @@ void Service(Record& e)
                 st = call.status;
             }
             if (st != rant::SendStatus::Ok) {
+                std::string why = Status("the call was refused", st);
                 std::lock_guard<std::mutex> g(e.mu);
-                e.error = Status("the call was refused", st);
+                e.fault = std::move(why);
                 e.stage = Stage::Failed;
             }
             break;
@@ -451,36 +516,56 @@ void Run()
     uint64_t openGen = 0, epoch = 0;
     size_t slots = 0;
     Clock::time_point retryAt{};
+    // This thread is no real time one, but the task's calls wait on s.mu, so nothing allocates under it.
+    std::string name;
+    name.reserve(128);
+    std::vector<Record*> list, gone;
     while (!s.stop) {
-        std::string name;
         int domain = 0;
         uint64_t configGen = 0;
         std::optional<Clock::time_point> firstUse;
-        std::vector<Record*> list;
         size_t mirrorSlots;
         bool mirrorBrowsing;
-        {
+        for (;;) {
+            list.reserve(s.total.load() + 16);
             std::lock_guard<std::mutex> g(s.mu);
-            name = s.name.empty() ? DefaultName() : s.name;
+            if (s.entities.size() > list.capacity()) continue;
+            name.assign(s.name);
             domain = s.domain;
             configGen = s.configGen;
             firstUse = s.firstUse;
             mirrorSlots = s.mirrorSlots;
             mirrorBrowsing = s.mirrorBrowsing;
-            for (auto& e : s.entities) list.push_back(e.get());
+            list.clear();
+            for (auto& e : s.entities)
+                if (e) list.push_back(e.get());
+            break;
+        }
+        if (name.empty()) name = DefaultName();
+        // A block that gave an entity up leaves it here, so it neither counts nor stays.
+        gone.clear();
+        for (Record* e : list)
+            if (e->removed) {
+                e->Drop("the block was removed");
+                gone.push_back(e);
+            }
+        if (!gone.empty()) {
+            list.erase(std::remove_if(list.begin(), list.end(), [](Record* e) { return e->removed.load(); }), list.end());
+            std::lock_guard<std::mutex> g(s.mu);
+            for (auto& p : s.entities)
+                if (p && std::find(gone.begin(), gone.end(), p.get()) != gone.end()) p.reset();
         }
         const auto now = Clock::now();
-        // A task takes three topic slots, so a node with too few for every entity opens again.
-        if (node && 16 + 3 * list.size() + mirrorSlots > slots) openGen = 0;
+        if (node && SlotsNeeded(list.size(), mirrorSlots) > slots) openGen = 0;
         const bool waitMirror = mirrorBrowsing && firstUse && now - *firstUse < MIRROR_WAIT;
         if ((!node || openGen != configGen) && firstUse && now - *firstUse >= OPEN_GRACE && now >= retryAt
             && !waitMirror) {
-            for (Record* e : list) e->Drop();
+            for (Record* e : list) e->Drop("the node reopened");
             Close(node);
             try {
                 rant::NodeOptions o;
                 o.domain = static_cast<uint16_t>(domain);
-                slots = std::min<size_t>(32 + 4 * list.size() + mirrorSlots, 65535);
+                slots = SlotsGranted(list.size(), mirrorSlots);
                 o.max_topics = static_cast<uint16_t>(slots);
                 node = std::make_shared<rant::Node>(name, o);
                 log::Attach(*node);
@@ -499,10 +584,6 @@ void Run()
         }
         if (node) {
             for (Record* e : list) {
-                if (e->removed) {
-                    e->Drop();
-                    continue;
-                }
                 bool stale;
                 {
                     std::lock_guard<std::mutex> g(e->mu);
@@ -521,7 +602,8 @@ void Run()
         std::unique_lock<std::mutex> lk(s.wakeMu);
         s.wake.wait_for(lk, IDLE_WAKE);
     }
-    for (auto& e : s.entities) e->Drop();
+    for (auto& e : s.entities)
+        if (e) e->Drop("the node closed");
     Close(node);
 }
 
@@ -574,13 +656,13 @@ void Demote()
     pthread_setaffinity_np(pthread_self(), sizeof all, &all);
 }
 
-int Configure(const std::string& name, int domain)
+int Configure(const char* name, size_t length, int domain)
 {
     State& s = S();
     {
         std::lock_guard<std::mutex> g(s.mu);
-        if (s.name != name || s.domain != domain) {
-            s.name = name;
+        if (s.domain != domain || s.name.size() != length || std::memcmp(s.name.data(), name, length) != 0) {
+            s.name.assign(name, length);
             s.domain = domain;
             ++s.configGen;
         }
@@ -589,24 +671,36 @@ int Configure(const std::string& name, int domain)
     return s.peers;
 }
 
-int Entity(int kind, int handle, const std::string& name)
+int Entity(int kind, int handle, const char* name, size_t length)
 {
-    if (kind < 1 || kind > 8 || name.empty()) return 0;
+    if (kind < static_cast<int>(Kind::Publisher) || kind > static_cast<int>(Kind::RemoteTask) || length == 0) return 0;
     if (Record* e = Find(handle))
-        if (static_cast<int>(e->kind) == kind && e->name == name) return handle;
+        if (static_cast<int>(e->kind) == kind && e->name.size() == length && std::memcmp(e->name.data(), name, length) == 0)
+            return handle;
     State& s = S();
     {
         std::lock_guard<std::mutex> g(s.mu);
         if (handle > 0 && static_cast<uint32_t>(handle >> 16) == s.generation) {
             const size_t old = static_cast<size_t>(handle & 0xffff) - 1;
-            if (old < s.entities.size()) s.entities[old]->removed = true;
+            if (old < s.entities.size() && s.entities[old] && !s.entities[old]->removed) {
+                s.entities[old]->removed = true;
+                --s.active;
+            }
         }
-        if (s.entities.size() >= 0xffff) return 0;
+        size_t slot = 0;
+        while (slot < s.entities.size() && s.entities[slot]) ++slot;
+        if (slot >= MAX_ENTITIES) return 0;
         auto e = std::make_unique<Record>();
         e->kind = static_cast<Kind>(kind);
-        e->name = name;
-        s.entities.push_back(std::move(e));
-        handle = static_cast<int>((s.generation << 16) | s.entities.size());
+        e->name.assign(name, length);
+        if (slot == s.entities.size()) {
+            s.entities.push_back(std::move(e));
+            s.total = s.entities.size();
+        } else {
+            s.entities[slot] = std::move(e);
+        }
+        ++s.active;
+        handle = static_cast<int>((s.generation << 16) | (slot + 1));
     }
     Touch();
     return handle;
@@ -632,13 +726,13 @@ void Bound(int handle, int which, int node, const char* name, int value)
     if (Layout* l = Part(Find(handle), which)) AddBound(*l, node, name, value);
 }
 
-void LayoutDone(int handle, int which, uintptr_t type)
+void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample)
 {
     Record* e = Find(handle);
     Layout* l = Part(e, which);
     if (!l) return;
     l->type = type;
-    Finish(*l);
+    Finish(*l, sample);
     if (!l->error.empty()) {
         Fail(*e, l->error);
         return;
@@ -647,8 +741,17 @@ void LayoutDone(int handle, int which, uintptr_t type)
         std::lock_guard<std::mutex> g(e->mu);
         e->schema[which] = l->schema;
         ++e->layoutGen;
+        e->hasLast = false;
     }
-    e->hasLast = false;
+    // Room for the first values, so the cycle does not allocate for them.
+    const size_t room = l->root.form == plc::Member::Form::String ? 4 + l->root.strCap : l->root.size;
+    e->scratch.reserve(room);
+    e->last.reserve(room);
+    {
+        std::lock_guard<std::mutex> g(e->mu);
+        e->out.reserve(room);
+        e->sendBuf.reserve(room);
+    }
     Wake();
 }
 
@@ -658,11 +761,12 @@ int Publish(int handle, uint8_t* data, int length, bool send)
     if (!e || e->kind != Kind::Publisher || !Encode(*e, VALUE, data, length)) return 0;
     const bool changed = !e->hasLast || e->scratch != e->last;
     std::lock_guard<std::mutex> g(e->mu);
-    if (send || changed) {
+    if (send || changed || e->resend) {
         e->last = e->scratch;
         e->hasLast = true;
         e->out = e->scratch;
         e->stage = Stage::Ready;
+        e->resend = false;
         Wake();
     }
     return e->count;
@@ -677,8 +781,12 @@ int Take(int handle, uint8_t* data, int length)
     int copied = 0;
     if (e->fresh && Fits(l, length)) {
         e->fresh = false;
-        if (Decode(l, e->in.data(), e->in.size(), data)) copied = 1;
-        else e->error = "a value arrived that does not fit Value";
+        if (Decode(l, e->in.data(), e->in.size(), data)) {
+            copied = 1;
+            e->fault.clear();
+        } else {
+            e->fault = "a value arrived that does not fit Value";
+        }
     }
     return e->count * 2 + copied;
 }
@@ -705,12 +813,14 @@ int Share(int handle, uint8_t* data, int length)
     e->fresh = false;
     if (e->in.empty()) return e->count * 2;
     if (!Decode(l, e->in.data(), e->in.size(), data)) {
-        e->error = "a value arrived that does not fit Value";
+        e->fault = "a value arrived that does not fit Value";
         return e->count * 2;
     }
+    e->fault.clear();
     blocks::Encode(l, data, e->scratch);
     if (e->scratch == e->last) return e->count * 2;
     e->last = e->scratch;
+    e->out = e->scratch;
     ++e->count;
     return e->count * 2 + 1;
 }
@@ -801,7 +911,7 @@ int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLen
     std::lock_guard<std::mutex> g(e->mu);
     if (encoded && (e->stage == Stage::Idle || e->stage == Stage::Done || e->stage == Stage::Failed)) {
         e->out = e->scratch;
-        e->error.clear();
+        e->fault.clear();
         e->in.clear();
         e->cancel = e->cancelSent = false;
         e->progressFresh = false;
@@ -826,7 +936,7 @@ int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLen
                 const bool fits = Fits(rsp, responseLength) && Decode(rsp, e->in.data(), e->in.size(), response);
                 e->in.clear();
                 if (!fits) {
-                    e->error = "the response does not fit the PLC's Response";
+                    e->fault = "the response does not fit the PLC's Response";
                     e->stage = Stage::Failed;
                     return 3;
                 }
@@ -851,7 +961,7 @@ std::shared_ptr<rant::Node> MirrorNode(size_t slots, bool browsing, uint64_t& ep
         moved = s.mirrorSlots != slots || s.mirrorBrowsing != browsing;
         s.mirrorSlots = slots;
         s.mirrorBrowsing = browsing;
-        if (s.shared && 16 + 3 * s.entities.size() + slots <= s.sharedSlots) {
+        if (s.shared && SlotsNeeded(s.active, slots) <= s.sharedSlots) {
             out = s.shared;
             epoch = s.sharedEpoch;
         }
@@ -861,12 +971,25 @@ std::shared_ptr<rant::Node> MirrorNode(size_t slots, bool browsing, uint64_t& ep
     return out;
 }
 
-std::string Failure(int handle)
+size_t Failure(int handle, char* out, size_t capacity)
 {
     Record* e = Find(handle);
-    if (!e) return handle ? "the block lost its entity, it opens a new one" : "";
-    std::lock_guard<std::mutex> g(e->mu);
-    return e->error;
+    const char* text = nullptr;
+    size_t length = 0;
+    if (!e) {
+        text = handle ? "the block lost its entity, it opens a new one"
+                      : "no entity: the name is empty or there are too many blocks";
+        length = std::strlen(text);
+    }
+    std::lock_guard<std::mutex> g(e ? e->mu : S().mu);
+    if (e) {
+        const std::string& why = e->error.empty() ? e->fault : e->error;
+        text = why.data();
+        length = why.size();
+    }
+    length = std::min(length, capacity);
+    if (length) std::memcpy(out, text, length);
+    return length;
 }
 
 void Shutdown()
@@ -878,6 +1001,8 @@ void Shutdown()
     if (s.thread.joinable()) s.thread.join();
     std::lock_guard<std::mutex> g(s.mu);
     s.entities.clear();
+    s.total = 0;
+    s.active = 0;
     s.firstUse.reset();
     s.name.clear();
     s.mirrorSlots = 0;

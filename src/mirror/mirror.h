@@ -4,6 +4,7 @@
 
 #include "mirror/config.h"
 
+#include <cstddef>
 #include <string>
 
 namespace plc {
@@ -12,8 +13,8 @@ namespace plc {
 // variables it publishes. Never waits.
 int Mirror(const Config& cfg);
 
-// Why the mirror publishes nothing, empty while it works.
-std::string MirrorFailure();
+// Copies why the mirror publishes nothing into out, cut at capacity. Returns its length, 0 while it works.
+size_t MirrorFailure(char* out, size_t capacity);
 
 // Stops the mirror and joins its thread, at library unload, before the node closes.
 void StopMirror();
