@@ -54,6 +54,9 @@ VAR
     rename_def : VariableDefinition;
     node_peers : DINT;
     seen_peers : Publisher;
+    other_node : Node;
+    other_text : STRING;
+    seen_other : Publisher;
     const_value : DINT := DINT#4242;
     const_pub : Publisher;
     release : BOOL;
@@ -171,6 +174,10 @@ END_IF;
 node(Name := name_sel, Domain := INT#0);
 node_peers := node.Peers;
 seen_peers(Topic := STRING#'RantTest/Peers', Value := node_peers);
+(* A second Node block naming the node otherwise leaves it alone and sets Error. *)
+other_node(Name := STRING#'plc_other', Domain := INT#0);
+other_text := other_node.ErrorText;
+seen_other(Topic := STRING#'RantTest/OtherNode', Value := other_text);
 
 (* A constant value must reach a subscriber that joins later, also after a reopen. *)
 const_pub(Topic := STRING#'RantTest/Const', Value := const_value);
@@ -208,7 +215,7 @@ sample_out.id := DINT#7;
 sample_out.label := STRING#'abc';
 sample_out.inner.a := INT#-3;
 sample_out.inner.b := REAL#1.5;
-sample_out.grid[1, 2] := INT#9;
+sample_out.grid[1][2] := INT#9;
 sample_out.phase := Phase#Active;
 sample_out.span := T#1500ms;
 sample_pub(Topic := STRING#'RantTest/Sample', Value := sample_out);

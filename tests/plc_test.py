@@ -26,7 +26,7 @@ for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("Rant
                      ("RantTest/MirrorError", "string"), ("RantTest/Peers", "i32"),
                      ("RantTest/BadError", "bool"), ("RantTest/BadText", "string"),
                      ("RantTest/FailsText", "string"), ("RantTest/SleepText", "string"),
-                     ("RantTest/SleepBusy", "bool")]:
+                     ("RantTest/SleepBusy", "bool"), ("RantTest/OtherNode", "string")]:
     node.subscriber(name, schema, keep(name), reliable=True, catch_up=1)
 
 # The schema the PLC's Sample block walks to: named by the IEC type, fields as the IEC names, a
@@ -41,7 +41,7 @@ Sample
     id: i32,
     label: string<15>,
     inner: Inner,
-    grid: i16[2][3],
+    grid: i16[3][2],
     phase: i16,
     span: i32,
 }"""
@@ -196,6 +196,9 @@ with lock:
 with lock:
     peers = list(seen.get("RantTest/Peers", []))
 check("Node, Peers counts the PC", bool(peers) and peers[-1] >= 1, peers[-3:])
+with lock:
+    other = list(seen.get("RantTest/OtherNode", []))
+check("Node, a second name sets Error and leaves the node", bool(other) and "another Node block" in other[-1], other[-3:])
 
 # Error and ErrorText: an empty topic, and a remote function the PC fails.
 with lock:
@@ -210,13 +213,13 @@ check("RemoteFunction failure reaches ErrorText", any("the PC said no" in t for 
 with lock:
     samples = list(seen.get("RantTest/Sample", []))
 last = samples[-1] if samples else None
-check("User struct, nested struct and string", last is not None and last.id == 7 and last.label == "abc"
-      and last.inner.a == -3 and last.inner.b == 1.5, last)
-check("User struct, 2D array, enum and TIME", last is not None and last.grid[1][2] == 9 and last.phase == 1
-      and last.span == 1500, last)
+check("User struct, nested struct and string", last is not None and last["id"] == 7 and last["label"] == "abc"
+      and last["inner"]["a"] == -3 and last["inner"]["b"] == 1.5, last)
+check("User struct, 2D array, enum and TIME", last is not None and last["grid"][1][2] == 9 and last["phase"] == 1
+      and last["span"] == 1500, last)
 back = sample_echo.call(last, timeout=5.0) if last is not None else None
-check("User struct as a Request and Response", back is not None and back.value.id == 8 and back.value.label == "abc"
-      and back.value.grid[1][2] == 9, back.value if back is not None else None)
+check("User struct as a Request and Response", back is not None and back.value["id"] == 8 and back.value["label"] == "abc"
+      and back.value["grid"][1][2] == 9, back.value if back is not None else None)
 
 # Hold: the call stays open until Release.
 held_result = []
@@ -250,5 +253,8 @@ node.subscriber("RantTest/Const", "i32", const_late.append, reliable=True, catch
 time.sleep(2)
 check("Publisher resends its constant after a reopen", 4242 in const_late, const_late[-3:])
 rename.set(False)
+# the PLC keeps a write, so the next run starts from its own value again
+setpoint.set(1.5)
+time.sleep(1)
 node.close()
 sys.exit(0 if ok else 1)
