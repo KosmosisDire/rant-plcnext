@@ -57,6 +57,18 @@ VAR
     other_node : Node;
     other_text : STRING;
     seen_other : Publisher;
+    orphan_value : DINT;
+    orphan : RemoteVariable;
+    orphan_text : STRING;
+    seen_orphan : Publisher;
+    log_go : BOOL;
+    log_go_def : VariableDefinition;
+    log_line : LogLine;
+    status_on : BOOL;
+    status_on_def : VariableDefinition;
+    alarm : Status;
+    alarm_cleared : DINT;
+    seen_cleared : Publisher;
     const_value : DINT := DINT#4242;
     const_pub : Publisher;
     release : BOOL;
@@ -178,6 +190,26 @@ seen_peers(Topic := STRING#'RantTest/Peers', Value := node_peers);
 other_node(Name := STRING#'plc_other', Domain := INT#0);
 other_text := other_node.ErrorText;
 seen_other(Topic := STRING#'RantTest/OtherNode', Value := other_text);
+
+(* A write to a variable nobody owns sets Error and is not kept for later. It writes every cycle, so
+   the error stays current across test runs and node reopens. *)
+orphan_value := cycles;
+orphan(Name := STRING#'RantTest/NoOwner', Value := orphan_value);
+orphan_text := orphan.ErrorText;
+seen_orphan(Topic := STRING#'RantTest/OrphanText', Value := orphan_text);
+
+(* Log: one line on each rising edge of the PC's LogGo. *)
+log_go_def(Name := STRING#'RantTest/LogGo', Value := log_go);
+log_line(Execute := log_go, Level := Level#Warn, Text := STRING#'hello from the PLC log');
+
+(* Status: a clearable condition raised while the PC's StatusOn holds. *)
+status_on_def(Name := STRING#'RantTest/StatusOn', Value := status_on);
+alarm(Key := STRING#'test_alarm', Active := status_on, Level := Level#Error, Text := STRING#'test alarm',
+      Clearable := TRUE);
+IF alarm.Cleared THEN
+    alarm_cleared := alarm_cleared + DINT#1;
+END_IF;
+seen_cleared(Topic := STRING#'RantTest/AlarmCleared', Value := alarm_cleared);
 
 (* A constant value must reach a subscriber that joins later, also after a reopen. *)
 const_pub(Topic := STRING#'RantTest/Const', Value := const_value);

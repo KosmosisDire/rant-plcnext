@@ -26,7 +26,8 @@ for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("Rant
                      ("RantTest/MirrorError", "string"), ("RantTest/Peers", "i32"),
                      ("RantTest/BadError", "bool"), ("RantTest/BadText", "string"),
                      ("RantTest/FailsText", "string"), ("RantTest/SleepText", "string"),
-                     ("RantTest/SleepBusy", "bool"), ("RantTest/OtherNode", "string")]:
+                     ("RantTest/SleepBusy", "bool"), ("RantTest/OtherNode", "string"),
+                     ("RantTest/OrphanText", "string"), ("RantTest/AlarmCleared", "i32")]:
     node.subscriber(name, schema, keep(name), reliable=True, catch_up=1)
 
 # The schema the PLC's Sample block walks to: named by the IEC type, fields as the IEC names, a
@@ -100,6 +101,11 @@ setpoint = node.remote_variable("RantTest/Setpoint", "f64")
 pc_mode = node.variable_definition("RantTest/PcMode", "i32", initial=3)
 count = node.remote_task("RantTest/Count", Double3, Double3, Double3)
 probe = node.remote_variable("Plc/mirrorProbe", "i32")
+log_go = node.remote_variable("RantTest/LogGo", "bool")
+status_on = node.remote_variable("RantTest/StatusOn", "bool")
+plc_logs, plc_status = [], {}
+node.on_log(lambda line: plc_logs.append(line) if line.node.startswith("plc_test") else None)
+node.on_status(lambda u: plc_status.__setitem__("conditions", u.conditions) if u.node.startswith("plc_test") else None)
 echo_var = node.remote_variable("Plc/mirrorEcho", "i32")
 
 time.sleep(4)
@@ -221,15 +227,56 @@ back = sample_echo.call(last, timeout=5.0) if last is not None else None
 check("User struct as a Request and Response", back is not None and back.value["id"] == 8 and back.value["label"] == "abc"
       and back.value["grid"][1][2] == 9, back.value if back is not None else None)
 
-# Hold: the call stays open until Release.
-held_result = []
+# Hold: the call stays open until Release. One more call waits beside it, and the next is busy.
+held_result, waiting_result, busy_result = [], [], []
 held.call_async(Double3(x=1.0), held_result.append)
-time.sleep(1.5)
+time.sleep(0.5)
+held.call_async(Double3(x=3.0), waiting_result.append)
+time.sleep(0.5)
+held.call_async(Double3(x=4.0), busy_result.append)
+time.sleep(1.0)
 check("FunctionDefinition, Hold keeps the call open", not held_result, held_result)
+check("FunctionDefinition, a third call is refused busy",
+      bool(busy_result) and busy_result[0].status != rant.CallStatus.OK and "busy" in (busy_result[0].message or ""),
+      busy_result[0].message if busy_result else "no answer")
 release.set(True)
 time.sleep(1.5)
 check("FunctionDefinition, Release answers it", bool(held_result) and held_result[0].value.x == 2.0,
       held_result[0].value if held_result else None)
+check("FunctionDefinition, the waiting call is answered next", bool(waiting_result) and waiting_result[0].value.x == 4.0,
+      waiting_result[0].value if waiting_result else None)
+with lock:
+    orphan = list(seen.get("RantTest/OrphanText", []))
+check("RemoteVariable, a write with no owner sets Error", any("no owner" in t for t in orphan), orphan[-3:])
+
+# Log: a rising Execute sends one line at its level.
+log_go.set(True)
+time.sleep(1.0)
+log_go.set(False)
+time.sleep(0.5)
+ours = [l for l in plc_logs if l.text == "hello from the PLC log"]
+check("Log, a rising Execute sends one line", len(ours) == 1 and ours[0].level == rant.Level.WARN,
+      [(l.level, l.text) for l in plc_logs[-3:]])
+
+# Status: Active raises a clearable condition, a clear from here holds it down and pulses Cleared.
+status_on.set(True)
+time.sleep(1.5)
+raised = [c for c in plc_status.get("conditions", []) if c.key == "test_alarm"]
+check("Status, Active raises the condition", len(raised) == 1 and raised[0].level == rant.Level.ERROR
+      and raised[0].clearable and raised[0].text == "test alarm", raised)
+# the PLC counts clears across runs, so this run's clear is one more than before it
+with lock:
+    before = (seen.get("RantTest/AlarmCleared") or [0])[-1]
+if raised:
+    plc = next(p.id for p in node.reflection.peers() if p.active and p.name.startswith("plc_test"))
+    node.clear_peer_status(plc, "test_alarm", raised[0].since_us)
+time.sleep(1.5)
+with lock:
+    cleared = list(seen.get("RantTest/AlarmCleared", []))
+check("Status, a clear from another node holds it down and pulses Cleared",
+      not any(c.key == "test_alarm" for c in plc_status.get("conditions", [])) and cleared[-1:] == [before + 1],
+      f"before {before}, seen {cleared[-3:]}")
+status_on.set(False)
 
 # A reopen with calls in flight: a call the PLC serves, and a call the PLC makes.
 release.set(False)
