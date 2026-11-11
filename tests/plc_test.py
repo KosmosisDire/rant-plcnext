@@ -192,7 +192,8 @@ with lock:
     check("Subscriber of a STRING, sent back", bool(tback) and tback[-1] == "hello from the PC", tback[-1] if tback else None)
     check("FunctionDefinition answered by the PLC", reply is not None and reply.x == 2.0 and reply.z == 6.0, reply)
     remote = seen.get("RantTest/RemoteResult", [])
-    check("RemoteFunction from the PLC", bool(doubled) and bool(remote) and remote[-1].x == 2 * doubled[-1],
+    # the newest call may be served before its result is published, so any result may answer
+    check("RemoteFunction from the PLC", bool(doubled) and any(r.x == 2 * d for r in remote for d in doubled),
           f"{len(doubled)} calls, last result {remote[-1] if remote else None}")
     results = seen.get("RantTest/WaitResult", [])
     check("RemoteTask from the PLC", bool(waited) and any(r.x == 3 * w for r in results for w in waited),
