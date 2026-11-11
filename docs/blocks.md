@@ -151,7 +151,10 @@ mirror();
 - A scalar is its bare type, a STRING is `string`, an array of scalars `elem[N]`, one size per
   dimension: `ARRAY[0..1] OF ARRAY[0..2] OF INT` is `i16[3][2]`, two arrays of three. `Matrix3x3` and the library's other
   arrays are their standard types.
-- An array of structs or of strings does not reach the mesh yet: the block reports it. So does
+- An enum is a Rant enum named by its IEC type, backed by its base type, INT unless it names one:
+  `Mode : USINT (Off := 0, Auto := 7);` is `Mode = enum<u8> { Off=0, Auto=7 }`. Rant matches an
+  enum by its name and width only, so one that talks to a node's enum takes its name and width.
+- An array of structs, strings or enums does not reach the mesh yet: the block reports it. So does
   an array whose bounds cannot be read.
 
 ## Math

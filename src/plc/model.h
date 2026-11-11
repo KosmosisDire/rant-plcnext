@@ -44,6 +44,9 @@ inline size_t ScalarByteSize(Scalar k)
 // per-element PLC names: (offset,count) reproduces "MyArr[offset .. offset+count-1]".
 struct ArrDim { int64_t offset; uint32_t count; };
 
+// One option of an enum: its name and value.
+struct EnumOption { std::string name; int64_t value; };
+
 // One member of a published struct, in declaration order. Skipped members are absent from the
 // schema but still drained.
 struct Member {
@@ -56,7 +59,8 @@ struct Member {
     uint32_t            count  = 0;      // Array: total element count
     std::vector<ArrDim> dims;            // Array: dimensions
     std::vector<Member> fields;          // Struct: its own members
-    std::string         typeName;        // Struct, standard Array: the PLC type as a DSL name, "" if unusable
+    std::string         typeName;        // Struct, standard Array, enum Scalar: the PLC type as a DSL name, "" if unusable
+    std::vector<EnumOption> options;     // Scalar named by typeName: an enum of kind with these options
     bool                standard = false;   // Struct, Array: a Rant standard type, named but never defined
     uint32_t            offset = 0;     // absolute byte offset in the RANT message
     uint32_t            size   = 0;      // fixed byte width in the message (0 if Skipped)

@@ -66,6 +66,11 @@ void __PInvoke__ Rant::Runtime::Bound(Int32 p0, Int32 p1, Int32 p2, UIntPtr p3, 
     blocks::Bound(p0, p1, p2, Chars(p3), p4);
 }
 
+void __PInvoke__ Rant::Runtime::Option(Int32 p0, Int32 p1, Int32 p2, UIntPtr p3, Int32 p4)
+{
+    blocks::Option(p0, p1, p2, Chars(p3), p4);
+}
+
 void __PInvoke__ Rant::Runtime::LayoutDone(Int32 p0, Int32 p1, UIntPtr p2, UIntPtr p3)
 {
     blocks::LayoutDone(p0, p1, p2, Bytes(p3));

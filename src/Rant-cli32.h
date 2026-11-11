@@ -39,6 +39,7 @@ public:
         static Boolean NeedsLayout(Int32 p0, Int32 p1, UIntPtr p2);
         static Int32 Field(Int32 p0, Int32 p1, Int32 p2, UIntPtr p3, UIntPtr p4, UIntPtr p5, Int32 p6, Int32 p7, Int32 p8, Int32 p9);
         static void Bound(Int32 p0, Int32 p1, Int32 p2, UIntPtr p3, Int32 p4);
+        static void Option(Int32 p0, Int32 p1, Int32 p2, UIntPtr p3, Int32 p4);
         static void LayoutDone(Int32 p0, Int32 p1, UIntPtr p2, UIntPtr p3);
         static Int32 Publish(Int32 p0, UIntPtr p1, Int32 p2, Boolean p3);
         static Int32 Take(Int32 p0, UIntPtr p1, Int32 p2);

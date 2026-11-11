@@ -252,7 +252,7 @@ sleep_busy := sleeper.Busy;
 seen_sleep(Topic := STRING#'RantTest/SleepText', Value := sleep_text);
 seen_sleep_busy(Topic := STRING#'RantTest/SleepBusy', Value := sleep_busy);
 
-(* A user struct with a nested struct, a string, a two dimensional array, an enum and a TIME. *)
+(* A user struct with a nested struct, a string, a two dimensional array, two enums and a TIME. *)
 sample_out.id := DINT#7;
 sample_out.label := STRING#'abc';
 sample_out.inner.a := INT#-3;
@@ -260,6 +260,7 @@ sample_out.inner.b := REAL#1.5;
 sample_out.grid[1][2] := INT#9;
 sample_out.phase := Phase#Active;
 sample_out.span := T#1500ms;
+sample_out.mode := Mode#Auto;
 sample_pub(Topic := STRING#'RantTest/Sample', Value := sample_out);
 sample_fn(Name := STRING#'RantTest/SampleEcho', Request := sample_req, Response := sample_rsp);
 IF sample_fn.Called THEN

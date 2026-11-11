@@ -1062,6 +1062,11 @@ void Bound(int handle, int which, int node, const char* name, int value)
     if (Layout* l = Part(Find(handle), which)) AddBound(*l, node, name, value);
 }
 
+void Option(int handle, int which, int node, const char* name, int value)
+{
+    if (Layout* l = Part(Find(handle), which)) AddOption(*l, node, name, value);
+}
+
 void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample)
 {
     Record* e = Find(handle);

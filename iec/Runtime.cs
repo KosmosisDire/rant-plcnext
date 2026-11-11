@@ -25,6 +25,7 @@ namespace Rant
         // What a layout node is beside its eCLR type code.
         public const int String = 1;
         public const int Array = 2;
+        public const int Enum = 4;
     }
 
     // The C++ runtime behind the blocks: one node, its thread, and an entity per block. A block
@@ -61,6 +62,11 @@ namespace Rant
 
         // One bound of an array node: the eCLR reports LB and UB constants in the offset slot.
         public static void Bound(int handle, int which, int node, UIntPtr name, int value)
+        {
+        }
+
+        // One option of an enum node, its name and value.
+        public static void Option(int handle, int which, int node, UIntPtr name, int value)
         {
         }
 

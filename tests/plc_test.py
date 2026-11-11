@@ -36,8 +36,10 @@ for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("Rant
     node.subscriber(name, schema, keep(name), reliable=True, catch_up=1)
 
 # The schema the PLC's Sample block walks to: named by the IEC type, fields as the IEC names, a
-# STRING[15] is string<15>. The enum and TIME widths are what the walk reported on the PLC.
-SAMPLE = """Inner
+# STRING[15] is string<15>, an enum its own type. The TIME width is what the walk reported on the PLC.
+SAMPLE = """Phase = enum<i16> { Idle=0, Active=1, Finished=2 }
+Mode = enum<u8> { Off=0, Manual=3, Auto=7 }
+Inner
 {
     a: i16,
     b: f32,
@@ -48,8 +50,9 @@ Sample
     label: string<15>,
     inner: Inner,
     grid: i16[3][2],
-    phase: i16,
+    phase: Phase,
     span: i32,
+    mode: Mode,
 }"""
 
 
@@ -217,7 +220,7 @@ check("Publisher with no topic sets Error and ErrorText", bool(bad) and bad[-1] 
       f"{bad[-1:]} {bad_text[-1:]}")
 check("RemoteFunction failure reaches ErrorText", any("the PC said no" in t for t in fails_text), fails_text[-3:])
 
-# Types: a user struct with a nested struct, a string, a 2D array, an enum and a TIME.
+# Types: a user struct with a nested struct, a string, a 2D array, two enums and a TIME.
 with lock:
     samples = list(seen.get("RantTest/Sample", []))
 last = samples[-1] if samples else None
@@ -225,6 +228,7 @@ check("User struct, nested struct and string", last is not None and last["id"] =
       and last["inner"]["a"] == -3 and last["inner"]["b"] == 1.5, last)
 check("User struct, 2D array, enum and TIME", last is not None and last["grid"][1][2] == 9 and last["phase"] == 1
       and last["span"] == 1500, last)
+check("A USINT enum with gaps in its values", last is not None and last["mode"] == 7, last)
 back = sample_echo.call(last, timeout=5.0) if last is not None else None
 check("User struct as a Request and Response", back is not None and back.value["id"] == 8 and back.value["label"] == "abc"
       and back.value["grid"][1][2] == 9, back.value if back is not None else None)

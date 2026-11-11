@@ -125,6 +125,15 @@ bool Build(const Layout& l, int index, const uint8_t* sample, Member& m, std::st
             return false;
         }
         m.form = Member::Form::Scalar;
+        // an enum is its own named type, else a peer that defines it refuses the bare number
+        if ((n.flags & FLAG_ENUM) && !n.options.empty()) {
+            if (!ValidTypeName(n.type)) {
+                error = n.type + ": the enum's name is no Rant type name";
+                return false;
+            }
+            m.typeName = n.type;
+            m.options = n.options;
+        }
         return true;
     }
     m.form = Member::Form::Struct;
@@ -234,6 +243,12 @@ void AddBound(Layout& l, int node, const char* name, int32_t value)
     if (name[0] != 'L' && name[0] != 'U') return;
     l.nodes[node].bounds.push_back(value);
     l.nodes[node].boundKinds.push_back(name[0]);
+}
+
+void AddOption(Layout& l, int node, const char* name, int32_t value)
+{
+    if (node < 0 || node >= static_cast<int>(l.nodes.size()) || !name) return;
+    l.nodes[node].options.push_back({ name, value });
 }
 
 void Finish(Layout& l, const uint8_t* sample)

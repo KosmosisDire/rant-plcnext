@@ -32,6 +32,7 @@ bool NeedsLayout(int handle, int which, uintptr_t type);
 int  Field(int handle, int which, int parent, const char* name, const char* space, const char* type,
            int offset, int size, int code, int flags);
 void Bound(int handle, int which, int node, const char* name, int value);
+void Option(int handle, int which, int node, const char* name, int value);
 void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample);
 
 // Publisher: queues the value when it changed or send is set. Returns the values sent.

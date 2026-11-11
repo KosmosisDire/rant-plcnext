@@ -1,5 +1,6 @@
 TYPE
     Phase : (Idle := 0, Active := 1, Finished := 2);
+    Mode : USINT (Off := 0, Manual := 3, Auto := 7);
     Inner : STRUCT
         a : INT;
         b : REAL;
@@ -11,5 +12,6 @@ TYPE
         grid : ARRAY[0..1] OF ARRAY[0..2] OF INT;
         phase : Phase;
         span : TIME;
+        mode : Mode;
     END_STRUCT;
 END_TYPE

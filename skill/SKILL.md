@@ -97,10 +97,13 @@ move(Name := 'Cell/Move', Request := goal_pose, Progress := at, Response := at,
 - A standard struct on a pin goes to the mesh as that standard type, so any Rant node reads it.
 - Your own struct goes as a Rant struct named by its IEC type, fields snake_case. Structs nest,
   and a STRING inside one keeps its declared capacity.
-- Scalars are their bare types, `STRING` is a string, `TIME` is milliseconds as `i32`, an enum
-  is its number.
+- Scalars are their bare types, `STRING` is a string, `TIME` is milliseconds as `i32`.
+- An enum is a Rant enum named by its IEC type, backed by its base type, INT unless it names one:
+  `Job : USINT (None := 0, Testgolf := 1);` is `Job = enum<u8> { None=0, Testgolf=1 }`. Rant
+  matches an enum by its name and width only, so to talk to a node's enum, give yours the same
+  name and base type. The options may be the ones the PLC uses.
 - An array of scalars is a list. A 2D array in your code is an array of arrays:
-  `ARRAY[0..1] OF ARRAY[0..2] OF INT`, index it `grid[1][2]`. Arrays of structs or strings do not
+  `ARRAY[0..1] OF ARRAY[0..2] OF INT`, index it `grid[1][2]`. Arrays of structs, strings or enums do not
   reach the mesh yet.
 - `Level` is `Level#Debug`, `Level#Info`, `Level#Warn` or `Level#Error`.
 

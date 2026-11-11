@@ -13,6 +13,7 @@ namespace blocks {
 // Node::flags, as iec/Runtime.cs Kind spells them.
 constexpr int FLAG_STRING = 1;
 constexpr int FLAG_ARRAY  = 2;
+constexpr int FLAG_ENUM   = 4;   // code is then the enum's underlying type
 
 // One node of an IEC type in the order the walk visits it.
 struct Node {
@@ -25,6 +26,7 @@ struct Node {
     int              flags  = 0;
     std::vector<int32_t> bounds;     // an array's lower and upper bound per dimension
     std::string          boundKinds; // 'L' or 'U' for each entry of bounds, in the order they came
+    std::vector<plc::EnumOption> options;   // an enum's options
     std::vector<int>     children;
 };
 
@@ -45,6 +47,8 @@ int AddNode(Layout& l, int parent, const char* name, const char* space, const ch
             uint32_t size, int code, int flags);
 // Records one bound of an array node. The eCLR names them LB, UB, or LB0, UB0 per dimension.
 void AddBound(Layout& l, int node, const char* name, int32_t value);
+// Records one option of an enum node.
+void AddOption(Layout& l, int node, const char* name, int32_t value);
 // Turns the walked nodes into the member tree and schema, or sets error. sample is the value's
 // memory, where a string's real capacity is.
 void Finish(Layout& l, const uint8_t* sample);

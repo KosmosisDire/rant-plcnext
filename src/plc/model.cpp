@@ -111,6 +111,15 @@ std::string ArrayType(const Member& m)
     return out;
 }
 
+// A scalar the PLC names, an enum, as its Rant definition: Phase = enum<i16> { Idle=0, Active=1 }.
+std::string EnumDef(const Member& m)
+{
+    std::string out = m.typeName + " = enum<" + SCALAR_TYPES[static_cast<int>(m.kind)] + "> {";
+    for (size_t i = 0; i < m.options.size(); i++)
+        out += (i ? ", " : " ") + m.options[i].name + "=" + std::to_string(m.options[i].value);
+    return out + " }";
+}
+
 // Rant refuses an unnamed struct, so each nested one is defined in defs ahead of its user.
 std::string StructBody(const std::vector<Member>& fields, bool hashName, std::string& defs,
                        NameList& defined)
@@ -120,6 +129,14 @@ std::string StructBody(const std::vector<Member>& fields, bool hashName, std::st
         switch (m.form) {
             case Member::Form::Skipped: break;
             case Member::Form::Scalar:
+                if (!m.typeName.empty()) {
+                    if (std::find(defined.begin(), defined.end(), m.typeName) == defined.end()) {
+                        defined.push_back(m.typeName);
+                        defs += EnumDef(m) + "\n";
+                    }
+                    out += "    " + m.dslName + ": " + m.typeName + ",\n";
+                    break;
+                }
                 out += "    " + m.dslName + ": " + SCALAR_TYPES[static_cast<int>(m.kind)] + ",\n";
                 break;
             case Member::Form::String:
@@ -161,7 +178,7 @@ std::string SchemaText(const Member& root, bool hashName)
         }
         case Member::Form::String: return "string";
         case Member::Form::Array: return ArrayType(root);
-        case Member::Form::Scalar: return SCALAR_TYPES[static_cast<int>(root.kind)];
+        case Member::Form::Scalar: return root.typeName.empty() ? SCALAR_TYPES[static_cast<int>(root.kind)] : EnumDef(root);
         case Member::Form::Skipped: break;
     }
     return "";
