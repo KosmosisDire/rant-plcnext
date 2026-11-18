@@ -22,12 +22,13 @@ plcx build
 
 ```
 rant add plcnext
+rant install plcnext
 ```
 
-- In a plcx workspace it puts the latest release in `libs/plcnext-<version>/Rant.pcwlx` and
-  references it in `pcwex.toml`.
-- Beside an Engineer project's `.pcwex` it puts it in Engineer's user libraries as
-  `Rant/Rant.pcwlx`. Add `Rant` to the project from there.
+- `rant add plcnext` in a plcx workspace puts the latest release in
+  `libs/plcnext-<version>/Rant.pcwlx` and references it in `pcwex.toml`.
+- `rant install plcnext` puts it in Engineer's user libraries as `Rant/Rant.pcwlx`, for every
+  project. Add `Rant` to a project from there.
 - `rant update` moves both to the latest release.
 
 Then declare the blocks like any others (docs/blocks.md), and `plcx build` and `plcx deploy`.

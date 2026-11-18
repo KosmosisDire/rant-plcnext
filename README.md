@@ -18,5 +18,5 @@ END_PROGRAM
 ```
 
 - Blocks for topics, functions, variables and tasks, a Mirror block, and Rant Math's functions.
-- `rant add plcnext` adds it to an Engineer project. Build it with `plcx build`.
+- `rant add plcnext` adds it to a plcx workspace, `rant install plcnext` to Engineer's user libraries.
 - docs/blocks.md lists the blocks.

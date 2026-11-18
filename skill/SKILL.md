@@ -11,8 +11,8 @@ Controllers on firmware 2026.0 and newer (AXC F 2152, AXC F 3152). Full docs:
 https://github.com/KosmosisDire/rant-plcnext/tree/main/docs (`blocks.md` first).
 
 - `rant add plcnext` in a plcx workspace puts it in `libs/` and references it in `pcwex.toml`.
-  Beside a plain `.pcwex` it puts it in Engineer's user libraries: add `Rant` to the project
-  from there. `rant update` moves either to the latest release.
+  `rant install plcnext` puts it in Engineer's user libraries for a plain `.pcwex`: add `Rant`
+  to the project from there. `rant update` moves either to the latest release.
 - Build and deploy the project as usual, with `plcx build` and `plcx deploy` in a plcx workspace.
 
 ## Rules
