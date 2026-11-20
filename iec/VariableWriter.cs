@@ -8,9 +8,9 @@ using Iec61131.Engineering.Prototypes.Variables;
 
 namespace Rant
 {
-    // Writes Value, or the fields of the message Msg built into Message, to the variable Name,
-    // which another node owns, whenever it changes and every cycle Send is set. The first value
-    // is where the program starts and is not written.
+    // Writes Value, or the fields a Msg block's message names, to the variable Name, which another
+    // node owns, whenever it changes and every cycle Send is set. The first value is where the
+    // program starts and is not written.
     [FunctionBlock]
     public class VariableWriter
     {
@@ -18,8 +18,8 @@ namespace Rant
         public IecString80 Name;
         [Input, DataType("ANY")]
         public Any Value;
-        [Input, DataType("UDINT")]
-        public uint Message;
+        [Input, DataType("STRING")]
+        public IecString80 TypeName;
         [Input]
         public bool Send;
         [Output, DataType("DINT")]
@@ -35,6 +35,7 @@ namespace Rant
         public void __Init()
         {
             Name.ctor();
+            TypeName.ctor();
             ErrorText.ctor();
         }
 
@@ -42,10 +43,11 @@ namespace Rant
         public unsafe void __Process()
         {
             handle = Runtime.Entity(Kind.VariableWriter, handle, ref Name);
-            bool value = Message == 0 && Layout.Describe(handle, 0, Value);
+            bool message = Layout.IsMessage(Value);
+            bool value = message || Layout.Describe(handle, 0, Value);
             if (handle != 0)
                 Count = Runtime.Publish(handle, value ? (UIntPtr)Value.pValue : UIntPtr.Zero, value ? (int)Value.nLength : 0,
-                    Send, (int)Message);
+                    Send, message, ref TypeName);
             Error = Runtime.Failed(handle, ref ErrorText);
         }
     }

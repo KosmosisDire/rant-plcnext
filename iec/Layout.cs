@@ -8,6 +8,14 @@ namespace Rant
     // once per type, since only managed code may read the type metadata.
     public class Layout
     {
+        // Whether the pin holds a message a Msg block built.
+        public static unsafe bool IsMessage(Any value)
+        {
+            UIntPtr type = value.pRuntimeTypeHandle;
+            return value.pValue != null && type != UIntPtr.Zero
+                && Runtime.IsMessage((UIntPtr)TypeInfo.GetNameSpace(type), (UIntPtr)TypeInfo.GetName(type));
+        }
+
         // False when the pin is not connected, which an input pin may be.
         public static unsafe bool Describe(int handle, int which, Any value)
         {

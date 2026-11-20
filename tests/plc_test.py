@@ -41,6 +41,7 @@ for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("Rant
                      ("RantTest/GaugeLevelSeen", "f64"), ("RantTest/GaugeLabelSeen", "string"),
                      ("RantTest/MsgAmbText", "string"), ("RantTest/MsgBadText", "string"),
                      ("RantTest/MsgFnSeen", Double3), ("RantTest/MsgStd", Double3), ("RantTest/Lit", "i32"),
+                     ("RantTest/EmptyFnSeen", "i32"), ("RantTest/MsgFnDefault", Double3),
                      ("RantTest/NoneText", "string")]:
     node.subscriber(name, schema, keep(name), reliable=True, catch_up=1)
 
@@ -134,6 +135,7 @@ node2.subscriber("RantTest/MsgTwo", "MsgTwoA { x: f64 }", keep("RantTest/MsgTwoA
 node2.subscriber("RantTest/MsgAmb", "AmbB { x: f64, y: f64 }", keep("RantTest/MsgAmbB"), reliable=True, catch_up=1)
 node.function_definition("RantTest/MsgFn", lambda r: Double3(x=float(r["a"]), y=r["b"], z=float(len(r["name"]))),
                          MSG_REQ, Double3)
+node.function_definition("RantTest/EmptyFn", lambda r: 42, "Empty", "i32")
 pose_in = node.publisher("RantTest/PoseIn", Pose, reliable=True, keep_last=1)
 text_in = node.publisher("RantTest/TextIn", "string", reliable=True, keep_last=1)
 echo = node.remote_function("RantTest/Echo", Double3, Double3)
@@ -278,17 +280,22 @@ with lock:
     std = (seen.get("RantTest/MsgStd") or [None])[-1]
     bad = list(seen.get("RantTest/MsgBadText", []))
     fn = list(seen.get("RantTest/MsgFnSeen", []))
+    empty = list(seen.get("RantTest/EmptyFnSeen", []))
+    default = list(seen.get("RantTest/MsgFnDefault", []))
     lit = list(seen.get("RantTest/Lit", []))
     none = list(seen.get("RantTest/NoneText", []))
 check("Msg into a Publisher, as the reader's type", last is not None and last["enabled"] is True and last["mode"] == 7
       and last["label"] == "from Msg" and last["count"] == 0 and 0 <= last["speed"] < 25, last)
-check("Msg names one of a topic's two types", two is not None and two["x"] == 1.5 and two["y"] == 2.5, two)
+check("TypeName names one of a topic's two types", two is not None and two["x"] == 1.5 and two["y"] == 2.5, two)
 check("Msg into a topic of two types without a name sets Error", any("2 types" in t for t in amb), amb[-1:])
-check("Msg names a standard type", std is not None and std.x == 1.0 and std.z == 3.0, std)
-check("Msg with a field name and no value sets Error", any("has no value" in t for t in bad), bad[-1:])
+check("TypeName names a standard type", std is not None and std.x == 1.0 and std.z == 3.0, std)
+check("Msg with a value for a field name sets Error", any("Field1 wants a field name" in t for t in bad), bad[-1:])
 check("Msg as a RemoteFunction's request", any(r.x == 7.0 and r.z == 3.0 for r in fn), fn[-1:])
+check("No Request calls a function of Empty", 42 in empty, empty[-1:])
+check("No Request sends the function's type at its defaults",
+      any(r.x == 0.0 and r.y == 0.0 and r.z == 0.0 for r in default) and not any(r.x == 7.0 for r in default), default[-3:])
 check("A literal into Publisher's Value", lit[-1:] == [77], lit[-1:])
-check("Publisher with neither Value nor Message sets Error", any("Value or Message" in t for t in none), none[-1:])
+check("Publisher with no Value sets Error", any("connect Value" in t for t in none), none[-1:])
 
 # Node: a second block naming the node otherwise.
 with lock:

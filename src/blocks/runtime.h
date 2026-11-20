@@ -36,10 +36,10 @@ void Bound(int handle, int which, int node, const char* name, int value);
 void Option(int handle, int which, int node, const char* name, int value);
 void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample);
 
-// Publisher and VariableWriter: queues the value when it changed or send is set, the message of
-// Msg's handle in place of it when message is not 0. A writer's first value is no change. Returns
-// the values sent.
-int Publish(int handle, uint8_t* data, int length, bool send, uint32_t message);
+// Publisher and VariableWriter: queues the value when it changed or send is set. When message is
+// set, data is a Msg block's message, sent as the type named type. A writer's first value is no
+// change. Returns the values sent.
+int Publish(int handle, uint8_t* data, int length, bool send, bool message, const char* type, size_t typeLength);
 // Subscriber and VariableReader: copies a value that arrived since the last call. Returns the
 // values received times two, plus one when this call copied one.
 int Take(int handle, uint8_t* data, int length);
@@ -53,10 +53,11 @@ int Serve(int handle, uint8_t* request, int requestLength, uint8_t* progress, in
 // TaskDefinition: fails the call in hand with reason.
 void Reject(int handle, const char* reason, size_t length);
 // RemoteFunction and RemoteTask: 0 idle, 1 busy with progress written as it comes, 2 done with
-// response written, 3 failed. cancel asks the provider of a running task to stop. A message not 0
-// is the request in place of request.
+// response written, 3 failed. cancel asks the provider of a running task to stop. When message is
+// set, request is a Msg block's message, or null for none, sent as the type named type.
 int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLength, uint8_t* progress,
-         int progressLength, uint8_t* response, int responseLength, uint32_t message);
+         int progressLength, uint8_t* response, int responseLength, bool message, const char* type,
+         size_t typeLength);
 
 // Log: queues text as a log line of the node at level (Rant's, 1 debug to 4 error). Returns 1 when
 // queued, 0 while the queue is busy, -1 when the queue is full and the line was dropped.

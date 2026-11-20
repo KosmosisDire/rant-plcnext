@@ -11,7 +11,7 @@ blocks, docs/usage.md how to build and test.
 | `src/Rant-cli.cpp`, `src/Runtime-cli.cpp` | the eCLR hooks and the native side of `iec/Runtime.cs` |
 | `src/blocks/runtime.*` | the shared node, its thread, and an entity per block |
 | `src/blocks/layout.*` | a block's value between IEC memory and the wire |
-| `src/blocks/message.*` | `Msg`'s messages: their buffers, and filling a target's type from them |
+| `src/blocks/message.*` | the Msg blocks' messages: their layout, and filling a target's type from them |
 | `src/mirror/mirror.*` | the Mirror block's thread: browse, create the variables, then the event loop |
 | `src/mirror/sampler.*` | the slow and fast GDS subscriptions and the sample budget |
 | `src/mirror/sync.*` | keeps the PLC and the mesh agreeing on values and forces |
@@ -49,19 +49,20 @@ changes nothing and the block tries again next cycle. So a PLC task never waits 
 
 ## Messages
 
-`Msg` is an extensible function, which Engineer runs two inputs at a time from the left, so
-each call adds one input to the message the call before it returned. A struct cannot pass
-between those calls (Engineer's native compile refuses it), so a call returns a handle into a
-ring of 256 buffers of 1024 bytes that every task shares. The handle carries the buffer's
-generation, so one kept past the buffer's next use reads as gone.
+`Msg1` to `Msg10` are functions with a fixed count of named pins, since Engineer never leaves a
+function input unconnected and an extensible function cannot pass a struct between its steps.
+Each returns the struct `Message`: a header, its first fault, and 1024 bytes of entries, each a
+field name, its value's eCLR type and the value. A receiving block tells it from any other value
+by its type, `Rant.Message`, and its `TypeName` pin names the type it goes out as. A pin left
+unconnected on a RemoteFunction or RemoteTask is a message with no fields.
 
 - The task copies the message out under the entity's lock and compares it with the last, as
   a value is compared. The node thread fills the target's type with it by field path.
-- A block with a Message opens its handle untyped first. That match is what makes the
-  readers' types, or the owner's, visible without fetching every peer's details. Once the
-  type is found the handle is made again with it. A topic's one type is taken only after it
-  stayed the only one for a second, since readers show up one by one. A typed reader logs one
-  schema mismatch against the untyped handle meanwhile.
+- The node fetches every peer's details (`fetch_details`), so a block sending a message finds
+  the readers' types, or the owner's, in reflection and makes its handle only then, typed. An
+  untyped handle would match first and make every typed reader log a mismatch, and two calls
+  of one function, one typed sooner, would collide on its name. A topic's one type is taken
+  only after it stayed the only one for a second, since readers show up one by one.
 - A call made before the type is found waits up to a second for it, then fails with why.
 - A VariableWriter's handle has the owner's type cut down to the fields its message names,
   under the same type names (`SubsetText`), so Rant's field writes mark only those. Other names

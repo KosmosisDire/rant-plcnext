@@ -3,9 +3,8 @@
 #include "blocks/layout.h"
 
 #include <algorithm>
-#include <atomic>
+#include <cstdio>
 #include <cstring>
-#include <limits>
 
 namespace blocks::msg {
 
@@ -19,25 +18,17 @@ enum Code : uint8_t {
     CODE_UDINT = 9, CODE_LINT = 10, CODE_ULINT = 11, CODE_REAL = 12, CODE_LREAL = 13
 };
 
-constexpr size_t SLOTS = 256;          // messages in flight across every task, the low byte of a handle
-constexpr size_t ENTRY_BYTES = 1024;
-constexpr size_t NAME_BYTES = 64;        // as long as an entity name may be
-constexpr size_t FAULT_BYTES = 80;       // an IEC STRING's capacity
+// Where a message's parts sit in its struct. The used count and fault length are 0 in a
+// Message variable the program never assigned, which makes it a message with no fields.
+constexpr size_t USED_AT = 0;          // u16
+constexpr size_t FAULT_LENGTH_AT = 2;  // u8
+constexpr size_t FAULT_AT = 4;
+constexpr size_t FAULT_BYTES = 80;     // an IEC STRING's capacity
+constexpr size_t ENTRIES_AT = FAULT_AT + FAULT_BYTES;
+constexpr size_t ENTRY_BYTES = MESSAGE_BYTES - ENTRIES_AT;   // [u8 name length][name][u32 type][u32 length][value]
+constexpr size_t NAME_BYTES = 64;      // as long as an entity name may be
 
-// One message. Its handle is 0 while a new message fills it, so a reader of the old one sees it go.
-struct Slot {
-    std::atomic<uint32_t> handle{0};
-    uint16_t used = 0;
-    uint8_t  typeLength = 0, pendingLength = 0, faultLength = 0;
-    bool     pending = false;          // a field name waits for its value
-    char     type[NAME_BYTES];
-    char     pendingName[NAME_BYTES];
-    char     fault[FAULT_BYTES];
-    uint8_t  entries[ENTRY_BYTES];     // [u8 name length][name][u32 type][u32 length][value]
-};
-
-Slot g_slots[SLOTS];
-std::atomic<uint32_t> g_next{0};
+static_assert(ENTRY_BYTES == 1024, "iec/Message.cs sizes the struct for 1024 bytes of entries");
 
 uint8_t  CodeOf(uint32_t type) { return static_cast<uint8_t>(type); }
 uint8_t  FlagsOf(uint32_t type) { return static_cast<uint8_t>(type >> 8); }
@@ -76,70 +67,20 @@ bool Text(const Item& i, const char*& chars, size_t& n)
     return true;
 }
 
+uint16_t Used(const uint8_t* m)
+{
+    uint16_t used = 0;
+    std::memcpy(&used, m + USED_AT, 2);
+    return std::min<uint16_t>(used, ENTRY_BYTES);
+}
+
 // The first fault is kept, since it is the one to fix.
-void Fault(Slot& s, const char* why)
+void Fault(uint8_t* m, const char* why)
 {
-    if (s.faultLength) return;
+    if (m[FAULT_LENGTH_AT]) return;
     const size_t n = std::min(std::strlen(why), FAULT_BYTES);
-    std::memcpy(s.fault, why, n);
-    s.faultLength = static_cast<uint8_t>(n);
-}
-
-void Name(Slot& s, const Item& b)
-{
-    const char* chars = nullptr;
-    size_t n = 0;
-    if (!Text(b, chars, n)) return Fault(s, "Msg wants a field name before each value");
-    if (n == 0 || n > NAME_BYTES) return Fault(s, "Msg was given an empty field name or one over 64 bytes");
-    std::memcpy(s.pendingName, chars, n);
-    s.pendingLength = static_cast<uint8_t>(n);
-    s.pending = true;
-}
-
-void Value(Slot& s, const Item& b)
-{
-    s.pending = false;
-    const uint8_t* bytes = b.data;
-    size_t n = b.data ? b.length : 0;
-    if (FlagsOf(b.type) & FLAG_STRING) {
-        const char* chars = nullptr;
-        Text(b, chars, n);
-        bytes = reinterpret_cast<const uint8_t*>(chars);
-    }
-    const size_t need = 1 + s.pendingLength + 4 + 4 + n;
-    if (s.used + need > ENTRY_BYTES) return Fault(s, "the message is over 1024 bytes");
-    uint8_t* p = s.entries + s.used;
-    *p++ = s.pendingLength;
-    std::memcpy(p, s.pendingName, s.pendingLength);
-    p += s.pendingLength;
-    const uint32_t length = static_cast<uint32_t>(n);
-    std::memcpy(p, &b.type, 4);
-    std::memcpy(p + 4, &length, 4);
-    if (n) std::memcpy(p + 8, bytes, n);
-    s.used = static_cast<uint16_t>(s.used + need);
-}
-
-// The next slot round the ring, emptied, with the handle it will carry once filled.
-Slot& Claim(uint32_t& handle)
-{
-    const uint32_t n = g_next.fetch_add(1, std::memory_order_relaxed);
-    Slot& s = g_slots[n % SLOTS];
-    handle = ((n / SLOTS) % 0xffffffu + 1) << 8 | (n % SLOTS);
-    s.handle.store(0, std::memory_order_relaxed);
-    std::atomic_thread_fence(std::memory_order_release);
-    s.used = 0;
-    s.typeLength = s.pendingLength = s.faultLength = 0;
-    s.pending = false;
-    return s;
-}
-
-uint32_t Begin(const char* fault)
-{
-    uint32_t h = 0;
-    Slot& s = Claim(h);
-    Fault(s, fault);
-    s.handle.store(h, std::memory_order_release);
-    return h;
+    std::memcpy(m + FAULT_AT, why, n);
+    m[FAULT_LENGTH_AT] = static_cast<uint8_t>(n);
 }
 
 // Whether v fits a field of kind, an integer of either sign.
@@ -218,51 +159,63 @@ bool Set(const d::RantSchema* s, uint8_t* buf, size_t cap, const std::string& na
 
 } // namespace
 
-uint32_t Step(Item a, Item b)
+bool IsMessageType(const char* space, const char* type)
 {
-    const char* chars = nullptr;
-    size_t n = 0;
-    if (Text(a, chars, n)) {
-        uint32_t h = 0;
-        Slot& s = Claim(h);
-        if (n > NAME_BYTES) Fault(s, "Msg was given a type name over 64 bytes");
-        else {
-            std::memcpy(s.type, chars, n);
-            s.typeLength = static_cast<uint8_t>(n);
-        }
-        Name(s, b);
-        s.handle.store(h, std::memory_order_release);
-        return h;
-    }
-    // Every later step gets the handle the step before it returned.
-    if (CodeOf(a.type) == CODE_UDINT && FlagsOf(a.type) == 0 && a.data && a.length == 4) {
-        uint32_t h = 0;
-        std::memcpy(&h, a.data, 4);
-        Slot& s = g_slots[h & 0xffu];
-        if (h == 0 || s.handle.load(std::memory_order_acquire) != h) return Begin("Msg was given a message of an earlier cycle");
-        if (s.pending) Value(s, b);
-        else Name(s, b);
-        return h;
-    }
-    return Begin("Msg starts with the type name, '' for the target's own");
+    return space && type && std::strcmp(space, "Rant") == 0 && std::strcmp(type, "Message") == 0;
 }
 
-bool Read(uint32_t handle, Message& out)
+void Begin(uint8_t* m)
 {
-    if (handle == 0) return false;
-    const Slot& s = g_slots[handle & 0xffu];
-    if (s.handle.load(std::memory_order_acquire) != handle) return false;
-    out.type.assign(s.type, std::min<size_t>(s.typeLength, NAME_BYTES));
-    out.fault.assign(s.fault, std::min<size_t>(s.faultLength, FAULT_BYTES));
-    if (out.fault.empty() && s.pending) {
-        out.fault.assign("the field ");
-        out.fault.append(s.pendingName, std::min<size_t>(s.pendingLength, NAME_BYTES));
-        out.fault.append(" has no value");
+    std::memset(m, 0, ENTRIES_AT);
+}
+
+void Add(uint8_t* m, int index, Item field, Item value)
+{
+    char why[FAULT_BYTES + 1];
+    const char* name = nullptr;
+    size_t n = 0;
+    if (!Text(field, name, n)) {
+        std::snprintf(why, sizeof why, "Field%d wants a field name in a STRING", index);
+        return Fault(m, why);
     }
-    out.entries.assign(s.entries, s.entries + std::min<size_t>(s.used, ENTRY_BYTES));
-    // A new message claiming the slot meanwhile clears the handle first.
-    std::atomic_thread_fence(std::memory_order_acquire);
-    return s.handle.load(std::memory_order_relaxed) == handle;
+    if (n == 0 || n > NAME_BYTES) {
+        std::snprintf(why, sizeof why, "Field%d is empty or over 64 bytes", index);
+        return Fault(m, why);
+    }
+    const uint8_t* bytes = value.data;
+    size_t length = value.data ? value.length : 0;
+    if (FlagsOf(value.type) & FLAG_STRING) {
+        const char* chars = nullptr;
+        Text(value, chars, length);
+        bytes = reinterpret_cast<const uint8_t*>(chars);
+    }
+    const uint16_t used = Used(m);
+    const size_t need = 1 + n + 4 + 4 + length;
+    if (used + need > ENTRY_BYTES) return Fault(m, "the message is over 1024 bytes");
+    uint8_t* p = m + ENTRIES_AT + used;
+    *p++ = static_cast<uint8_t>(n);
+    std::memcpy(p, name, n);
+    p += n;
+    const uint32_t size = static_cast<uint32_t>(length);
+    std::memcpy(p, &value.type, 4);
+    std::memcpy(p + 4, &size, 4);
+    if (length) std::memcpy(p + 8, bytes, length);
+    const uint16_t now = static_cast<uint16_t>(used + need);
+    std::memcpy(m + USED_AT, &now, 2);
+}
+
+void Read(const uint8_t* m, size_t length, const char* type, size_t typeLength, Message& out)
+{
+    out.type.assign(type, typeLength);
+    out.fault.clear();
+    out.entries.clear();
+    if (!m) return;
+    if (length != MESSAGE_BYTES) {
+        out.fault.assign("the Message holds no message of this library");
+        return;
+    }
+    out.fault.assign(reinterpret_cast<const char*>(m + FAULT_AT), std::min<size_t>(m[FAULT_LENGTH_AT], FAULT_BYTES));
+    out.entries.assign(m + ENTRIES_AT, m + ENTRIES_AT + Used(m));
 }
 
 bool Apply(const Message& m, const d::RantSchema* s, std::vector<uint8_t>& out, std::string& why)

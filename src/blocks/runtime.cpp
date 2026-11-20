@@ -100,8 +100,8 @@ struct Record {
 
     bool                 unlogged = false; // error holds a reason the node thread has not logged yet
 
-    // A Message input in place of the value or request, under mu: the type Msg named, empty for
-    // the target's own, and the message the node thread sends next.
+    // A Msg block's message in place of the value or request, under mu: the type TypeName names,
+    // empty for the target's own, and the message the node thread sends next.
     bool                 viaMessage = false;
     std::string          messageType;
     msg::Message         messageOut;
@@ -118,8 +118,7 @@ struct Record {
     // The handle sends messages of messageSchema, empty until the target's type is found, which
     // holds for messageFor on the node of messageEpoch.
     bool builtViaMessage = false;
-    bool typedHandle = true;                // false while a message handle waits to be made with its type
-    bool retyping = false;                  // the next build only gives the handle its found type
+    bool typedHandle = true;                // false while a message block waits for its type, with no handle
     rant::Schema messageSchema;
     std::string messageFor;
     uint64_t messageEpoch = 0;
@@ -278,9 +277,6 @@ rant::Qos Catching()
 
 Bytes View(const std::vector<uint8_t>& v) { return Bytes(v.data(), v.size()); }
 
-// What a block says when its Message input holds no message.
-constexpr char STALE_MESSAGE[] = "Message holds no message: wire Msg into it, in the cycle that builds it";
-
 bool SameMessage(const msg::Message& a, const msg::Message& b)
 {
     return a.entries == b.entries && a.fault == b.fault && a.type == b.type;
@@ -294,9 +290,9 @@ void Keep(msg::Message& to, const msg::Message& from)
     to.entries = from.entries;
 }
 
-// The type a Message goes out as: the target's own, or among a topic's the one Msg named. Its
-// handle is untyped until then, which is what lets the node see its readers or owner. Empty
-// with why while there is none, or a topic has several and Msg named none.
+// The type a message goes out as: the target's own, or among a topic's the one TypeName names. The
+// node fetches every peer's details, so the readers' or owner's types show with no handle here.
+// Empty with why while there is none, or a topic has several and TypeName names none.
 rant::Schema FindType(rant::Node& node, const Record& e, std::string& why)
 {
     const std::string& type = e.messageFor;
@@ -324,16 +320,16 @@ rant::Schema FindType(rant::Node& node, const Record& e, std::string& why)
     }
     if (found.size() == 1) return found[0];
     if (found.size() > 1)
-        why = e.name + " has " + std::to_string(found.size()) + " types, name one as Msg's first input";
+        why = e.name + " has " + std::to_string(found.size()) + " types, name one in TypeName";
     else if (e.kind != Kind::Publisher)
         why = type.empty() ? "no owner of " + e.name + " is on the mesh yet" : "the owner of " + e.name + " takes no " + type;
     else
-        why = type.empty() ? "no node reading " + e.name + " has a type yet, name one as Msg's first input"
+        why = type.empty() ? "no node reading " + e.name + " has a type yet, name one in TypeName"
                            : "no node reading " + e.name + " has the type " + type;
     return rant::Schema();
 }
 
-// Looks for the type once the mesh changed, and has the handle made again with it once found.
+// Looks for the type once the mesh changed, and has the handle made with it once found.
 // False with why while it is not found.
 bool ResolveType(Record& e, std::string& why)
 {
@@ -354,7 +350,6 @@ bool ResolveType(Record& e, std::string& why)
     }
     e.settleAt = Clock::time_point{};
     e.messageSchema = found;
-    e.retyping = true;
     std::lock_guard<std::mutex> g(e.mu);
     ++e.layoutGen;
     return true;
@@ -826,8 +821,7 @@ struct CallRecord : Record {
             std::lock_guard<std::mutex> g(mu);
             const bool had = fn || task;
             // A call queued for this handle would go out on the next node, late, so it fails as one in flight does.
-            // One waiting for its request type waits on for the typed handle.
-            if (step == Step::Busy || (step == Step::Ready && had && !retyping)) {
+            if (step == Step::Busy || (step == Step::Ready && had)) {
                 fault = why;
                 step = Step::Failed;
             }
@@ -944,8 +938,7 @@ bool Build(rant::Node& node, Record& e, uint64_t epoch)
         messageType = e.messageType;
     }
     e.Drop("the block's type changed");
-    e.retyping = false;
-    // A found type belongs to the node it was found on and the name Msg gave.
+    // A found type belongs to the node it was found on and the name TypeName gave.
     if (!viaMessage || e.messageFor != messageType || e.messageEpoch != epoch) {
         e.messageSchema = rant::Schema();
         e.reflectionSeen = 0;
@@ -957,6 +950,8 @@ bool Build(rant::Node& node, Record& e, uint64_t epoch)
     e.messageEpoch = epoch;
     e.node = &node;
     // A part not walked yet builds once its layout moves layoutGen, so there is nothing to retry.
+    // Nor does a message's type, which Service looks for.
+    if (!e.typedHandle) return true;
     for (int i = 0; i < e.Parts(); ++i)
         if (schema[i].empty() && !(i == VALUE && viaMessage)) return true;
     try {
@@ -1048,6 +1043,8 @@ void Run()
             try {
                 rant::NodeOptions o;
                 o.domain = static_cast<uint16_t>(domain);
+                // Every peer's names and types, so a Msg block's message finds its target's type.
+                o.fetch_details = true;
                 slots = SlotsGranted(list.size(), mirrorSlots);
                 o.max_topics = static_cast<uint16_t>(slots);
                 node = std::make_shared<rant::Node>(name, o);
@@ -1162,8 +1159,8 @@ bool Encode(Record& e, int which, const uint8_t* data, int length)
     return true;
 }
 
-// Moves the record to messages of the type Msg named, or back to its value pin, which builds its
-// handle again. Under the record's lock.
+// Moves the record to messages of the type TypeName names, or back to its value pin, which builds
+// its handle again. Under the record's lock.
 void Source(Record& e, bool viaMessage)
 {
     const std::string& type = e.messageRead.type;
@@ -1322,9 +1319,9 @@ void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample)
 
 namespace {
 
-constexpr char NO_VALUE[] = "connect Value or Message";
+constexpr char NO_VALUE[] = "connect Value";
 
-// A block given neither its value nor a Message says so.
+// A block given no value says so.
 int NoValue(Record& e)
 {
     std::unique_lock<std::mutex> g = Try(e);
@@ -1337,7 +1334,7 @@ int NoValue(Record& e)
 // lost, since it would land late. Under the record's lock.
 void Queue(PublisherRecord& e, bool changed, bool first)
 {
-    if (e.fault == NO_VALUE || e.fault == STALE_MESSAGE) e.fault.clear();
+    if (e.fault == NO_VALUE) e.fault.clear();
     if (!(e.sendAsked || changed || e.resend)) return;
     const bool baseline = e.Writes() && first && !e.sendAsked;
     e.resend = false;
@@ -1352,17 +1349,13 @@ void Queue(PublisherRecord& e, bool changed, bool first)
     Wake();
 }
 
-int PublishMessage(PublisherRecord& e, uint32_t message, bool send)
+int PublishMessage(PublisherRecord& e, const uint8_t* data, int length, const char* type, size_t typeLength, bool send)
 {
     e.sendAsked = e.sendAsked || send;
-    const bool read = msg::Read(message, e.messageRead);
-    const bool changed = read && (!e.hasMessageLast || !SameMessage(e.messageRead, e.messageLast));
+    msg::Read(data, static_cast<size_t>(length), type, typeLength, e.messageRead);
+    const bool changed = !e.hasMessageLast || !SameMessage(e.messageRead, e.messageLast);
     std::unique_lock<std::mutex> g = Try(e);
     if (!g.owns_lock()) return e.shown;
-    if (!read) {
-        if (e.fault != STALE_MESSAGE) e.fault.assign(STALE_MESSAGE);
-        return e.shown;
-    }
     Source(e, true);
     const bool first = !e.hasMessageLast;
     if (changed || first) {
@@ -1376,11 +1369,11 @@ int PublishMessage(PublisherRecord& e, uint32_t message, bool send)
 
 } // namespace
 
-int Publish(int handle, uint8_t* data, int length, bool send, uint32_t message)
+int Publish(int handle, uint8_t* data, int length, bool send, bool message, const char* type, size_t typeLength)
 {
     PublisherRecord* e = As<PublisherRecord>(Find(handle));
     if (!e) return 0;
-    if (message) return PublishMessage(*e, message, send);
+    if (message) return PublishMessage(*e, data, length, type, typeLength, send);
     if (!data) return NoValue(*e);
     if (!Encode(*e, VALUE, data, length)) return 0;
     // A Send of one cycle the lock missed still goes out on the next.
@@ -1532,25 +1525,21 @@ void Reject(int handle, const char* reason, size_t length)
 }
 
 int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLength, uint8_t* progress,
-         int progressLength, uint8_t* response, int responseLength, uint32_t message)
+         int progressLength, uint8_t* response, int responseLength, bool message, const char* type,
+         size_t typeLength)
 {
     using Step = CallRecord::Step;
     CallRecord* e = As<CallRecord>(Find(handle));
     if (!e) return 0;
-    const bool read = message && msg::Read(message, e->messageRead);
+    if (message) msg::Read(request, static_cast<size_t>(requestLength), type, typeLength, e->messageRead);
     std::unique_lock<std::mutex> g = Try(*e);
     // The edge of Execute stays unseen until a cycle holds the lock.
     if (!g.owns_lock()) return e->shown;
-    if (message ? read : request != nullptr) Source(*e, message != 0);
+    if (message || request) Source(*e, message);
     const bool rising = execute && !e->lastExecute;
     e->lastExecute = execute;
     const Layout& rsp = e->parts[RESPONSE];
     const bool idle = e->step == Step::Idle || e->step == Step::Done || e->step == Step::Failed;
-    if (rising && idle && (message ? !read : !request)) {
-        e->fault.assign(message ? STALE_MESSAGE : "connect Request or Message");
-        e->step = Step::Failed;
-        return e->shown = 3;
-    }
     if (rising && idle && (message || Encode(*e, VALUE, request, requestLength))) {
         if (e->down) {
             e->fault.assign(DOWN_CALL);

@@ -76,10 +76,10 @@ namespace Rant
         {
         }
 
-        // Publisher and VariableWriter: queues the value when it changed or send is set, the message of
-        // Msg's handle in place of it when message is not 0. A writer's first value is no change.
-        // Returns the values sent.
-        public static int Publish(int handle, UIntPtr data, int length, bool send, int message)
+        // Publisher and VariableWriter: queues the value when it changed or send is set. When message
+        // is set, data is a Msg block's message, sent as the type typeName names. A writer's first
+        // value is no change. Returns the values sent.
+        public static int Publish(int handle, UIntPtr data, int length, bool send, bool message, ref IecString80 typeName)
         {
             return 0;
         }
@@ -112,10 +112,11 @@ namespace Rant
         }
 
         // RemoteFunction and RemoteTask: starts a call on execute, then reports 1 busy, 2 done with
-        // response written, 3 failed, 0 idle. cancel asks the provider of a running task to stop. A
-        // message not 0 is the request in place of request.
+        // response written, 3 failed, 0 idle. cancel asks the provider of a running task to stop. When
+        // message is set, request is a Msg block's message, or zero for none, sent as typeName's type.
         public static int Call(int handle, bool execute, bool cancel, UIntPtr request, int requestLength,
-            UIntPtr progress, int progressLength, UIntPtr response, int responseLength, int message)
+            UIntPtr progress, int progressLength, UIntPtr response, int responseLength, bool message,
+            ref IecString80 typeName)
         {
             return 0;
         }
@@ -139,11 +140,20 @@ namespace Rant
             return false;
         }
 
-        // One step of Msg: the type name and the first field name, or a message's handle and its next
-        // input. Returns the message's handle, 0 when no buffer is left.
-        public static int MsgStep(UIntPtr a, int aLength, int aType, UIntPtr b, int bLength, int bType)
+        // Whether a pin's type, by its namespace and name, is the Message struct the Msg blocks build.
+        public static bool IsMessage(UIntPtr space, UIntPtr name)
         {
-            return 0;
+            return false;
+        }
+
+        // Empties the message at m, then adds a Msg block's index'th field name and its value to it.
+        public static void MsgBegin(UIntPtr m)
+        {
+        }
+
+        public static void MsgAdd(UIntPtr m, int index, UIntPtr field, int fieldLength, int fieldType,
+            UIntPtr value, int valueLength, int valueType)
+        {
         }
 
         // Starts the mirror, and starts it over when a setting changed. Returns the variables it

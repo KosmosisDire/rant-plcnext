@@ -1,6 +1,6 @@
 ---
 name: plcnext
-description: Writing PLCnext Engineer programs in Structured Text with the library Rant: function blocks that publish, subscribe, offer and call functions and tasks, share variables, log and raise status on the Rant mesh, messages built by field name with Msg, Rant's standard types as IEC types, and Rant Math's IEC functions. Use when a PLC program should talk to Rant nodes or use Rant's types or math.
+description: Writing PLCnext Engineer programs in Structured Text with the library Rant: function blocks that publish, subscribe, offer and call functions and tasks, share variables, log and raise status on the Rant mesh, messages built by field name with Msg1 to Msg10, Rant's standard types as IEC types, and Rant Math's IEC functions. Use when a PLC program should talk to Rant nodes or use Rant's types or math.
 ---
 
 # Rant PLCnext
@@ -40,15 +40,15 @@ https://github.com/KosmosisDire/rant-plcnext/tree/main/docs (`blocks.md` first).
 | block | does | inputs | outputs |
 |---|---|---|---|
 | `Node` | names the node | `Name`, `Domain : INT` | |
-| `Publisher` | sends `Value` or `Message` when it changes, or every cycle `Send` is set | `Topic`, `Value`, `Message`, `Send` | `Count` |
+| `Publisher` | sends `Value` when it changes, or every cycle `Send` is set | `Topic`, `Value`, `TypeName`, `Send` | `Count` |
 | `Subscriber` | writes the newest value into `Value` | `Topic`, `Value` | `Received`, `Count` |
 | `FunctionDefinition` | offers a function, answers on the next call or while `Hold` stays set | `Name`, `Request`, `Response`, `Hold` | `Called`, `Count` |
-| `RemoteFunction` | calls on a rising `Execute` | `Name`, `Execute`, `Request` or `Message`, `Response` | `Busy`, `Done` |
+| `RemoteFunction` | calls on a rising `Execute` | `Name`, `Execute`, `Request`, `TypeName`, `Response` | `Busy`, `Done` |
 | `VariableDefinition` | owns a variable: program changes go out, mesh writes land | `Name`, `Value` | `Received`, `Count` |
 | `VariableReader` | writes another node's variable into `Value` | `Name`, `Value` | `Received`, `Count` |
-| `VariableWriter` | writes `Value` or `Message` to another node's variable when it changes, or every cycle `Send` is set | `Name`, `Value`, `Message`, `Send` | `Count` |
+| `VariableWriter` | writes `Value` to another node's variable when it changes, or every cycle `Send` is set | `Name`, `Value`, `TypeName`, `Send` | `Count` |
 | `TaskDefinition` | offers a task, one call at a time | `Name`, `Request`, `Progress`, `Response`, `Complete`, `Fail`, `Reason` | `Started`, `Running`, `Cancelled`, `Count` |
-| `RemoteTask` | runs a task on a rising `Execute` | `Name`, `Execute`, `Cancel`, `Request` or `Message`, `Progress`, `Response` | `Busy`, `Done` |
+| `RemoteTask` | runs a task on a rising `Execute` | `Name`, `Execute`, `Cancel`, `Request`, `TypeName`, `Progress`, `Response` | `Busy`, `Done` |
 | `LogLine` | one log line on a rising `Execute` | `Execute`, `Level`, `Text` | `Count` |
 | `Status` | raises the condition `Key` while `Active` | `Key`, `Active`, `Level`, `Text`, `Clearable` | `Cleared` |
 | `Mirror` | publishes every PLC variable under `Prefix` | `Prefix`, `Locals`, `Forcing`, `StringCap` | `Variables` |
@@ -96,20 +96,23 @@ move(Name := 'Cell/Move', Request := goal_pose, Progress := at, Response := at,
 
 ## Messages without declared types
 
-`Msg` builds a message from field names and values, so a program sends a type it never
-declares. Wire its result into `Message` in the same cycle.
+`Msg1` to `Msg10` build a message from that many field names and values, so a program sends a
+type it never declares. Wire the result into `Value` or `Request`.
 
 ```
-cmd(Topic := 'Conveyor/Cmd', Message := Msg('', 'speed', speed, 'enabled', run, 'mode', 'Auto'));
-call(Name := 'Gp12/SetServo', Execute := go, Message := Msg('', 'on', TRUE), Response := rsp);
+cmd(Topic := 'Conveyor/Cmd', Value := Msg3('speed', speed, 'enabled', run, 'mode', 'Auto'));
+call(Name := 'Gp12/SetServo', Execute := go, Request := Msg1('on', TRUE), Response := rsp);
 ```
 
-- The first input is the type name, `''` for the target's own: the owner's type of a function,
-  task or variable, or the one type a topic's readers have. A VariableWriter writes only the
-  fields the message names. A topic with several types needs the name. A
-  standard type such as `'Pose'` works by name anywhere.
-- Then a field name and its value, in turn. A path reaches inside: `'position.x'`, `'pts[1]'`.
-  Fields left out keep their defaults.
+- Pins go `Field1`, `Value1`, `Field2`, `Value2` and on. ST calls functions only in order,
+  without pin names, and every pin must be connected. A path reaches inside: `'position.x'`,
+  `'pts[1]'`. Fields left out keep their defaults.
+- The message goes out as the target's own type: the owner's type of a function, task or
+  variable, or the one type a topic's readers have. A topic with several types needs the
+  sending block's `TypeName`, which also takes a standard type such as `'Pose'`. A
+  VariableWriter writes only the fields the message names.
+- A RemoteFunction or RemoteTask with no `Request` sends the target's type at its defaults, so
+  a function of `Empty` needs nothing wired.
 - A number goes into a wider field, an integer only into one it fits, never a REAL into an
   integer. An enum field takes its option's name or number.
 

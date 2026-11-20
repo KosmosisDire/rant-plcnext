@@ -8,8 +8,9 @@ using Iec61131.Engineering.Prototypes.Variables;
 
 namespace Rant
 {
-    // Calls the function Name with Request, or the message Msg built into Message, on a rising
-    // Execute. Done or Error holds the outcome, with Response written, until Execute falls.
+    // Calls the function Name with Request on a rising Execute. Done or Error holds the outcome, with
+    // Response written, until Execute falls. A Msg block's message, or no Request at all, goes out
+    // as the function's type with the fields it names, the rest at their defaults.
     [FunctionBlock]
     public class RemoteFunction
     {
@@ -19,8 +20,8 @@ namespace Rant
         public bool Execute;
         [Input, DataType("ANY")]
         public Any Request;
-        [Input, DataType("UDINT")]
-        public uint Message;
+        [Input, DataType("STRING")]
+        public IecString80 TypeName;
         [InOut, DataType("ANY")]
         public Any Response;
         [Output]
@@ -38,6 +39,7 @@ namespace Rant
         public void __Init()
         {
             Name.ctor();
+            TypeName.ctor();
             ErrorText.ctor();
         }
 
@@ -46,11 +48,13 @@ namespace Rant
         {
             handle = Runtime.Entity(Kind.RemoteFunction, handle, ref Name);
             int state = 0;
-            bool request = Message == 0 && Layout.Describe(handle, 0, Request);
+            // A message, or none at all, goes out as the target's type with the fields it names.
+            bool message = Layout.IsMessage(Request) || Request.pValue == null;
+            bool request = message || Layout.Describe(handle, 0, Request);
             if (Layout.Describe(handle, 1, Response))
                 state = Runtime.Call(handle, Execute, false, request ? (UIntPtr)Request.pValue : UIntPtr.Zero,
                     request ? (int)Request.nLength : 0, UIntPtr.Zero, 0, (UIntPtr)Response.pValue, (int)Response.nLength,
-                    (int)Message);
+                    message, ref TypeName);
             Busy = state == 1;
             Done = state == 2;
             Error = Runtime.Failed(handle, ref ErrorText) || state == 3;

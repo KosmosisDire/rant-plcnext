@@ -8,8 +8,8 @@ using Iec61131.Engineering.Prototypes.Variables;
 
 namespace Rant
 {
-    // Publishes Value, or the message Msg built into Message, on Topic whenever it changes, and
-    // every cycle Send is set.
+    // Publishes Value on Topic whenever it changes, and every cycle Send is set. A Msg block's
+    // message goes out as the readers' type, or the one TypeName names when they have several.
     [FunctionBlock]
     public class Publisher
     {
@@ -17,8 +17,8 @@ namespace Rant
         public IecString80 Topic;
         [Input, DataType("ANY")]
         public Any Value;
-        [Input, DataType("UDINT")]
-        public uint Message;
+        [Input, DataType("STRING")]
+        public IecString80 TypeName;
         [Input]
         public bool Send;
         [Output, DataType("DINT")]
@@ -34,6 +34,7 @@ namespace Rant
         public void __Init()
         {
             Topic.ctor();
+            TypeName.ctor();
             ErrorText.ctor();
         }
 
@@ -41,10 +42,11 @@ namespace Rant
         public unsafe void __Process()
         {
             handle = Runtime.Entity(Kind.Publisher, handle, ref Topic);
-            bool value = Message == 0 && Layout.Describe(handle, 0, Value);
+            bool message = Layout.IsMessage(Value);
+            bool value = message || Layout.Describe(handle, 0, Value);
             if (handle != 0)
                 Count = Runtime.Publish(handle, value ? (UIntPtr)Value.pValue : UIntPtr.Zero, value ? (int)Value.nLength : 0,
-                    Send, (int)Message);
+                    Send, message, ref TypeName);
             Error = Runtime.Failed(handle, ref ErrorText);
         }
     }

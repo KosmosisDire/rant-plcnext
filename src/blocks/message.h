@@ -1,7 +1,7 @@
 #pragma once
-// Messages Msg builds: a type name, then field names and the values the program gave them. They
-// live in a ring of fixed buffers, so a PLC cycle allocates nothing, and a block's Message input
-// reads one by the handle Msg returned.
+// Messages the Msg blocks build: field names and the values the program gave them, written into
+// the Message struct the block returns, so a PLC cycle allocates nothing. A block's Value or
+// Request pin reads one, and its TypeName pin names the type it goes out as.
 
 #include "rant.hpp"
 
@@ -11,28 +11,34 @@
 
 namespace blocks::msg {
 
-// One input of Msg: its memory and its type as iec/Msg.cs packs it, the eCLR type code in the
-// low byte, the Kind flags in the next, and an array's element size above them.
+// One input of a Msg block: its memory and its type as iec/Msg.cs packs it, the eCLR type code in
+// the low byte, the Kind flags in the next, and an array's element size above them.
 struct Item {
     const uint8_t* data = nullptr;
     uint32_t       length = 0;
     uint32_t       type = 0;
 };
 
-// One step of Msg, which Engineer folds left: the type name and the first field name, or a
-// message's handle and its next input. Returns the message's handle, 0 when no buffer is left.
-uint32_t Step(Item a, Item b);
+// The size of iec/Message.cs's struct: a header, the first fault, then the entries.
+constexpr size_t MESSAGE_BYTES = 1108;
 
-// A message copied out of its buffer.
+// Whether a pin's type, by its eCLR namespace and name, is iec/Message.cs's struct.
+bool IsMessageType(const char* space, const char* type);
+
+// Empties the message at m, then adds the index'th field name and its value to it.
+void Begin(uint8_t* m);
+void Add(uint8_t* m, int index, Item field, Item value);
+
+// A message copied out of its struct.
 struct Message {
-    std::string          type;      // empty for the target's own
+    std::string          type;      // TypeName's, empty for the target's own
     std::string          fault;     // how the program built it wrong, empty when it did not
     std::vector<uint8_t> entries;   // read with Apply
 };
 
-// Copies the message of handle into out. False when handle is no message or its buffer was
-// used again since, as a handle kept past the cycle that built it finds.
-bool Read(uint32_t handle, Message& out);
+// Copies the message at m of length bytes into out, as the type named type. m null is a message
+// with no fields, so the type goes out at its defaults.
+void Read(const uint8_t* m, size_t length, const char* type, size_t typeLength, Message& out);
 
 // A message of schema s holding each field m names, the rest at their defaults. False with why
 // when a name is not a field of s or its value does not fit the field.

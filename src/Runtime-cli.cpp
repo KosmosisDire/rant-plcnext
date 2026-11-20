@@ -77,9 +77,10 @@ void __PInvoke__ Rant::Runtime::LayoutDone(Int32 p0, Int32 p1, UIntPtr p2, UIntP
     blocks::LayoutDone(p0, p1, p2, Bytes(p3));
 }
 
-Int32 __PInvoke__ Rant::Runtime::Publish(Int32 p0, UIntPtr p1, Int32 p2, Boolean p3, Int32 p4)
+Int32 __PInvoke__ Rant::Runtime::Publish(Int32 p0, UIntPtr p1, Int32 p2, Boolean p3, Boolean p4,
+                                         pcoslib::IecString80* p5)
 {
-    return blocks::Publish(p0, Bytes(p1), p2, p3, static_cast<uint32_t>(p4));
+    return blocks::Publish(p0, Bytes(p1), p2, p3, p4, Chars80(p5), Length80(p5));
 }
 
 Int32 __PInvoke__ Rant::Runtime::Take(Int32 p0, UIntPtr p1, Int32 p2)
@@ -104,9 +105,9 @@ void __PInvoke__ Rant::Runtime::Reject(Int32 p0, pcoslib::IecString80* p1)
 }
 
 Int32 __PInvoke__ Rant::Runtime::Call(Int32 p0, Boolean p1, Boolean p2, UIntPtr p3, Int32 p4, UIntPtr p5, Int32 p6,
-                                      UIntPtr p7, Int32 p8, Int32 p9)
+                                      UIntPtr p7, Int32 p8, Boolean p9, pcoslib::IecString80* p10)
 {
-    return blocks::Call(p0, p1, p2, Bytes(p3), p4, Bytes(p5), p6, Bytes(p7), p8, static_cast<uint32_t>(p9));
+    return blocks::Call(p0, p1, p2, Bytes(p3), p4, Bytes(p5), p6, Bytes(p7), p8, p9, Chars80(p10), Length80(p10));
 }
 
 Int32 __PInvoke__ Rant::Runtime::Log(Int32 p0, pcoslib::IecString80* p1, pcoslib::IecString80* p2)
@@ -131,11 +132,22 @@ Boolean __PInvoke__ Rant::Runtime::Failed(Int32 p0, pcoslib::IecString80* p1)
     return Report(why, length, p1);
 }
 
-Int32 __PInvoke__ Rant::Runtime::MsgStep(UIntPtr p0, Int32 p1, Int32 p2, UIntPtr p3, Int32 p4, Int32 p5)
+Boolean __PInvoke__ Rant::Runtime::IsMessage(UIntPtr p0, UIntPtr p1)
 {
-    const blocks::msg::Item a{ Bytes(p0), static_cast<uint32_t>(p1), static_cast<uint32_t>(p2) };
-    const blocks::msg::Item b{ Bytes(p3), static_cast<uint32_t>(p4), static_cast<uint32_t>(p5) };
-    return static_cast<Int32>(blocks::msg::Step(a, b));
+    return blocks::msg::IsMessageType(Chars(p0), Chars(p1));
+}
+
+void __PInvoke__ Rant::Runtime::MsgBegin(UIntPtr p0)
+{
+    blocks::msg::Begin(Bytes(p0));
+}
+
+void __PInvoke__ Rant::Runtime::MsgAdd(UIntPtr p0, Int32 p1, UIntPtr p2, Int32 p3, Int32 p4, UIntPtr p5, Int32 p6,
+                                       Int32 p7)
+{
+    const blocks::msg::Item field{ Bytes(p2), static_cast<uint32_t>(p3), static_cast<uint32_t>(p4) };
+    const blocks::msg::Item value{ Bytes(p5), static_cast<uint32_t>(p6), static_cast<uint32_t>(p7) };
+    blocks::msg::Add(Bytes(p0), p1, field, value);
 }
 
 Int32 __PInvoke__ Rant::Runtime::Mirror(pcoslib::IecString80* p0, Boolean p1, Boolean p2, Int32 p3)
