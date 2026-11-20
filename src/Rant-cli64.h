@@ -41,6 +41,7 @@ public:
         static void Bound(Int32 p0, Int32 p1, Int32 p2, UIntPtr p3, Int32 p4);
         static void Option(Int32 p0, Int32 p1, Int32 p2, UIntPtr p3, Int32 p4);
         static void LayoutDone(Int32 p0, Int32 p1, UIntPtr p2, UIntPtr p3);
+        static void Unwired(Int32 p0, Int32 p1);
         static Int32 Publish(Int32 p0, UIntPtr p1, Int32 p2, Boolean p3, Boolean p4, pcoslib::IecString80* p5);
         static Int32 Take(Int32 p0, UIntPtr p1, Int32 p2);
         static Int32 Share(Int32 p0, UIntPtr p1, Int32 p2);

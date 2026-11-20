@@ -10,7 +10,8 @@ Every block shares one node per PLC, and a block call never waits on the network
 - `Error` and `ErrorText` clear when the cause does. A call that fails sets them until the next
   call.
 - A value pin the block writes into is in out and takes a variable. One it only reads is an
-  input and takes a literal too.
+  input and takes a literal too. A remote call's `Progress` and `Response` are inputs the block
+  writes through, so a call that wants no answer leaves them unconnected.
 - A name is at most 64 bytes.
 - When the node opens again, a call in hand ends with the text `the node reopened`.
 - A call or a variable write made while the node is down sets `Error` and is never sent late. One
@@ -62,7 +63,7 @@ outcome, with `Response` written, until `Execute` falls. A [Msg](#msg) block's m
 the function's own type, and so does no `Request` at all, with every field at its default, as for
 a function of `Empty`.
 
-- `Name : STRING`, `Execute : BOOL`, `Request : ANY`, `TypeName : STRING`, `Response : ANY` (in out)
+- `Name : STRING`, `Execute : BOOL`, `Request : ANY`, `TypeName : STRING`, `Response : ANY`
 - `Busy`, `Done`, `Error : BOOL`, `ErrorText : STRING`
 
 ## VariableDefinition
@@ -122,7 +123,7 @@ message or nothing as RemoteFunction does. `Progress` is written as it comes whi
 `Done` or `Error` holds the outcome, with `Response` written, until `Execute` falls.
 
 - `Name : STRING`, `Execute`, `Cancel : BOOL`, `Request : ANY`, `TypeName : STRING`,
-  `Progress`, `Response : ANY` (in out)
+  `Progress`, `Response : ANY`
 - `Busy`, `Done`, `Error : BOOL`, `ErrorText : STRING`
 
 ## LogLine

@@ -16,6 +16,15 @@ namespace Rant
                 && Runtime.IsMessage((UIntPtr)TypeInfo.GetNameSpace(type), (UIntPtr)TypeInfo.GetName(type));
         }
 
+        // A pin the block writes through but the program may leave unconnected. False only while
+        // a connected pin's type cannot be described.
+        public static unsafe bool Optional(int handle, int which, Any value)
+        {
+            if (value.pValue != null) return Describe(handle, which, value);
+            Runtime.Unwired(handle, which);
+            return true;
+        }
+
         // False when the pin is not connected, which an input pin may be.
         public static unsafe bool Describe(int handle, int which, Any value)
         {

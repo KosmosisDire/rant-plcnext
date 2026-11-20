@@ -22,9 +22,11 @@ https://github.com/KosmosisDire/rant-plcnext/tree/main/docs (`blocks.md` first).
 - A block's `Name` or `Topic` is fixed once the node opens. Use one block per topic, never one
   block switched between topics.
 - A value pin the block writes into is in out and takes a variable: the `Value` of a Subscriber,
-  VariableDefinition and VariableReader, a definition's `Request`, a remote call's `Progress` and
-  `Response`. A pin the block only reads is an input and takes a literal too: the `Value` of a
-  Publisher and VariableWriter, a remote call's `Request`, a definition's `Progress` and `Response`.
+  VariableDefinition and VariableReader, a definition's `Request`. A pin the block only reads is
+  an input and takes a literal too: the `Value` of a Publisher and VariableWriter, a remote
+  call's `Request`, a definition's `Progress` and `Response`.
+- A remote call's `Progress` and `Response` are inputs the block writes the answer through.
+  Wire a variable to get it, or leave them unconnected for a call that wants no answer.
 - Every block has `Error : BOOL` and `ErrorText : STRING`. They clear when the cause does.
 - Names: nodes snake_case (`plc_cell`), topics and other names PascalCase segments
   (`Cell/CupFull`), at most 64 bytes.
@@ -101,7 +103,7 @@ type it never declares. Wire the result into `Value` or `Request`.
 
 ```
 cmd(Topic := 'Conveyor/Cmd', Value := Msg3('speed', speed, 'enabled', run, 'mode', 'Auto'));
-call(Name := 'Gp12/SetServo', Execute := go, Request := Msg1('on', TRUE), Response := rsp);
+call(Name := 'Gp12/SetServo', Execute := go, Request := Msg1('on', TRUE));
 ```
 
 - Pins go `Field1`, `Value1`, `Field2`, `Value2` and on. ST calls functions only in order,

@@ -10,9 +10,12 @@
 #include <atomic>
 #include <cstring>
 #include <chrono>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -41,6 +44,8 @@ constexpr auto RETRY      = std::chrono::seconds(2);
 constexpr auto IDLE_WAKE  = std::chrono::milliseconds(50);
 // A message call waits this long for its request type, as long as Rant's first send waits for a match.
 constexpr auto TYPE_WAIT  = std::chrono::seconds(1);
+// The schema text of a part whose optional pin is left unconnected, so it takes any value.
+constexpr char UNWIRED[] = "*";
 // The node waits this long for a browsing mirror, so it opens once with room for its variables.
 constexpr auto MIRROR_WAIT = std::chrono::seconds(20);
 
@@ -118,13 +123,18 @@ struct Record {
     // The handle sends messages of messageSchema, empty until the target's type is found, which
     // holds for messageFor on the node of messageEpoch.
     bool builtViaMessage = false;
-    bool typedHandle = true;                // false while a message block waits for its type, with no handle
+    bool typesKnown = true;                 // false while the block waits for a type, with no handle
     rant::Schema messageSchema;
     std::string messageFor;
     uint64_t messageEpoch = 0;
     uint32_t reflectionSeen = 0;            // the mesh epoch the last search for the type read
     Clock::time_point settleAt{};           // a topic's one type is taken from then, unless another came
     msg::Message messageSending;
+    // A call's progress or response pin left unconnected takes the provider's type, found with a
+    // message's, so every call of one function on the node makes the same handle and shares it.
+    bool unwired[3] = {};
+    rant::Schema answer[3];
+    bool answersFound = false;
 
     explicit Record(Kind k) : kind(k) {}
     virtual ~Record() = default;
@@ -133,6 +143,9 @@ struct Record {
     {
         return builtViaMessage ? messageSchema : n.schema(schema[0]);
     }
+    bool AnswersUnwired() const { return unwired[1] || unwired[2]; }
+    // Every type the handle needs that the program leaves to the mesh is found.
+    bool TypesFound() const { return (!builtViaMessage || messageSchema) && (!AnswersUnwired() || answersFound); }
     virtual int Parts() const { return 1; }
     // Makes the Rant handle from the parts' schemas, value being the last one out. Throws when it cannot.
     virtual void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>& value) = 0;
@@ -329,8 +342,24 @@ rant::Schema FindType(rant::Node& node, const Record& e, std::string& why)
     return rant::Schema();
 }
 
-// Looks for the type once the mesh changed, and has the handle made with it once found.
-// False with why while it is not found.
+// The provider's progress and response types, for a call's pins left unconnected. False with why
+// while the function or task has no provider.
+bool FindAnswers(rant::Node& node, Record& e, std::string& why)
+{
+    const rant::EntityKind k = e.kind == Kind::RemoteTask ? rant::EntityKind::Task : rant::EntityKind::Function;
+    const std::optional<rant::Entity> x = node.reflection().find(k, e.name);
+    if (!x || !x->provides) {
+        why = "no owner of " + e.name + " is on the mesh yet";
+        return false;
+    }
+    e.answer[PROGRESS] = x->progress_schema;
+    e.answer[RESPONSE] = x->rsp_schema;
+    e.answersFound = true;
+    return true;
+}
+
+// Looks for the types the program leaves to the mesh once it changed, and has the handle made
+// once all are found. False with why while one is not.
 bool ResolveType(Record& e, std::string& why)
 {
     if (!e.node) return false;
@@ -338,17 +367,21 @@ bool ResolveType(Record& e, std::string& why)
     const bool settled = e.settleAt != Clock::time_point{} && Clock::now() >= e.settleAt;
     if (seen == e.reflectionSeen && !settled) return false;
     e.reflectionSeen = seen;
-    const rant::Schema found = FindType(*e.node, e, why);
-    if (!found) {
+    rant::Schema found = e.messageSchema;
+    if (e.builtViaMessage && !found) {
+        found = FindType(*e.node, e, why);
+        if (!found) {
+            e.settleAt = Clock::time_point{};
+            return false;
+        }
+        // A topic's readers show up one by one, so its one type counts once no other came for a while.
+        if (e.kind == Kind::Publisher && e.messageFor.empty() && !settled) {
+            if (e.settleAt == Clock::time_point{}) e.settleAt = Clock::now() + TYPE_WAIT;
+            return false;
+        }
         e.settleAt = Clock::time_point{};
-        return false;
     }
-    // A topic's readers show up one by one, so its one type counts once no other came for a while.
-    if (e.kind == Kind::Publisher && e.messageFor.empty() && !settled) {
-        if (e.settleAt == Clock::time_point{}) e.settleAt = Clock::now() + TYPE_WAIT;
-        return false;
-    }
-    e.settleAt = Clock::time_point{};
+    if (e.AnswersUnwired() && !e.answersFound && !FindAnswers(*e.node, e, why)) return false;
     e.messageSchema = found;
     std::lock_guard<std::mutex> g(e.mu);
     ++e.layoutGen;
@@ -404,8 +437,8 @@ struct PublisherRecord : Record {
     {
         // A message waits, queued, until the type it goes out as is found.
         std::string why;
-        if (!typedHandle) {
-            if (!messageSchema && !ResolveType(*this, why) && !why.empty()) Fail(*this, why);
+        if (!typesKnown) {
+            if (!TypesFound() && !ResolveType(*this, why) && !why.empty()) Fail(*this, why);
             return;
         }
         {
@@ -703,6 +736,21 @@ struct ServeRecord : Record {
     }
 };
 
+struct CallRecord;
+
+// One Rant call handle of a function or task, which every block calling it on the node shares,
+// since Rant keeps one per name. An answer reaches the block that called while it still uses it.
+struct SharedCall {
+    std::optional<rant::RemoteFunction<Bytes, Bytes>>    fn;
+    std::optional<rant::RemoteTask<Bytes, Bytes, Bytes>> task;
+    uint64_t types[3] = {};             // the schema hashes every user must have
+    std::mutex mu;
+    std::vector<CallRecord*> users;     // under mu
+};
+
+// The node thread's: the call handles in use, by kind and name.
+std::map<std::string, std::weak_ptr<SharedCall>> g_calls;
+
 // RemoteFunction and RemoteTask: the task calls once on a rising Execute and reads the answer.
 struct CallRecord : Record {
     enum class Step { Idle, Ready, Busy, Done, Failed };
@@ -713,13 +761,13 @@ struct CallRecord : Record {
     std::vector<uint8_t> progress;
     bool progressFresh = false;
     uint32_t callId = 0;        // a task call in flight
+    uint64_t callNumber = 0;    // the call in flight, so a late answer to an earlier one is dropped
     // The node closed after this record had a handle. Only a call made before Rant first started waits.
     bool down = false;
-    // A message call fails once it waited this long for its request type, with the last reason.
+    // A call fails once it waited this long for the types it leaves to the mesh, with the last reason.
     Clock::time_point typeDeadline{};
     std::string lastWhy;   // node thread only
-    std::optional<rant::RemoteFunction<Bytes, Bytes>>        fn;
-    std::optional<rant::RemoteTask<Bytes, Bytes, Bytes>>     task;
+    std::shared_ptr<SharedCall> calls;   // node thread only
 
     explicit CallRecord(Kind k) : Record(k) {}
     static bool Holds(Kind k) { return k == Kind::RemoteFunction || k == Kind::RemoteTask; }
@@ -728,24 +776,44 @@ struct CallRecord : Record {
 
     void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>&) override
     {
-        if (IsTask())
-            task = node.remote_task<Bytes, Bytes, Bytes>(name, rant::TaskOptions{}, ValueSchema(node, schema),
-                                                         node.schema(schema[PROGRESS]), node.schema(schema[RESPONSE]));
-        else
-            fn = node.remote_function<Bytes, Bytes>(name, rant::FunctionOptions{}, ValueSchema(node, schema),
-                                                    node.schema(schema[RESPONSE]));
+        const rant::Schema request = ValueSchema(node, schema), response = Answer(node, schema, RESPONSE);
+        const rant::Schema progress = IsTask() ? Answer(node, schema, PROGRESS) : rant::Schema();
+        const uint64_t types[3] = { request.hash(), response.hash(), progress.hash() };
+        std::weak_ptr<SharedCall>& slot = g_calls[(IsTask() ? "task " : "function ") + name];
+        std::shared_ptr<SharedCall> c = slot.lock();
+        if (c && !std::equal(types, types + 3, c->types))
+            throw std::runtime_error("another block calls " + name + " with other types");
+        if (!c) {
+            c = std::make_shared<SharedCall>();
+            if (IsTask())
+                c->task = node.remote_task<Bytes, Bytes, Bytes>(name, rant::TaskOptions{}, request, progress, response);
+            else
+                c->fn = node.remote_function<Bytes, Bytes>(name, rant::FunctionOptions{}, request, response);
+            std::copy(types, types + 3, c->types);
+            slot = c;
+        }
+        {
+            std::lock_guard<std::mutex> g(c->mu);
+            c->users.push_back(this);
+        }
+        calls = std::move(c);
         std::lock_guard<std::mutex> g(mu);
         down = false;
     }
-    // The response handler of a call.
-    void Answered(const rant::ResponseView<Bytes>& r)
+    // A progress or response type: the provider's for a pin left unconnected, else the walked one.
+    rant::Schema Answer(rant::Node& node, const std::string (&schema)[3], int part) const
+    {
+        return unwired[part] ? answer[part] : node.schema(schema[part]);
+    }
+    // The response handler of call number n.
+    void Answered(uint64_t n, const rant::ResponseView<Bytes>& r)
     {
         const Bytes b = r.data();
         std::string message;
         if (!r.ok()) message = std::string(r.message());
         std::lock_guard<std::mutex> g(mu);
         // A call a reopen already ended has no one waiting for its answer.
-        if (step != Step::Busy) return;
+        if (step != Step::Busy || n != callNumber) return;
         if (r.ok()) {
             in.assign(b.data(), b.data() + b.size());
             step = Step::Done;
@@ -758,10 +826,10 @@ struct CallRecord : Record {
     {
         // The request's type is looked for from the start, so a call seldom waits for it.
         std::string why;
-        if (!typedHandle) {
-            if (!messageSchema && !ResolveType(*this, why) && !why.empty()) lastWhy = std::move(why);
+        if (!typesKnown) {
+            if (!TypesFound() && !ResolveType(*this, why) && !why.empty()) lastWhy = std::move(why);
             std::lock_guard<std::mutex> g(mu);
-            if (step == Step::Ready && !messageSchema && Clock::now() >= typeDeadline) {
+            if (step == Step::Ready && !TypesFound() && Clock::now() >= typeDeadline) {
                 fault = lastWhy;
                 step = Step::Failed;
             }
@@ -773,7 +841,7 @@ struct CallRecord : Record {
             if (step == Step::Busy && cancel && !cancelSent) {
                 cancelNow = cancelSent = true;
             } else {
-                if (step != Step::Ready || !(fn || task)) return;
+                if (step != Step::Ready || !calls) return;
                 if (builtViaMessage) {
                     messageSending.entries.swap(messageOut.entries);
                     messageSending.fault.swap(messageOut.fault);
@@ -781,10 +849,11 @@ struct CallRecord : Record {
                     out.swap(sendBuf);
                 }
                 step = Step::Busy;
+                ++callNumber;
             }
         }
         if (cancelNow) {
-            if (task) task->cancel(callId);
+            if (calls->task) calls->task->cancel(callId);
             return;
         }
         if (builtViaMessage && !msg::Apply(messageSending, messageSchema.raw(), sendBuf, why)) {
@@ -794,16 +863,28 @@ struct CallRecord : Record {
             return;
         }
         rant::SendStatus st;
-        auto done = [this](const rant::ResponseView<Bytes>& r) { Answered(r); };
-        if (fn) {
-            st = fn->call_async(View(sendBuf), done);
+        // An answer reaches this block only while it still uses the handle, which it leaves before it is freed.
+        const std::weak_ptr<SharedCall> via = calls;
+        const uint64_t n = callNumber;
+        auto user = [via, this](auto&& reach) {
+            const std::shared_ptr<SharedCall> c = via.lock();
+            if (!c) return;
+            std::lock_guard<std::mutex> g(c->mu);
+            if (std::find(c->users.begin(), c->users.end(), this) != c->users.end()) reach();
+        };
+        auto done = [user, n, this](const rant::ResponseView<Bytes>& r) { user([&] { Answered(n, r); }); };
+        if (calls->fn) {
+            st = calls->fn->call_async(View(sendBuf), done);
         } else {
-            const rant::TaskCall call = task->call_async(View(sendBuf), [this](const rant::ProgressView<Bytes>& p) {
+            const rant::TaskCall call = calls->task->call_async(View(sendBuf), [user, n, this](const rant::ProgressView<Bytes>& p) {
                 if (!p.has_value()) return;
-                const Bytes b = p.data();
-                std::lock_guard<std::mutex> g(mu);
-                progress.assign(b.data(), b.data() + b.size());
-                progressFresh = true;
+                user([&] {
+                    const Bytes b = p.data();
+                    std::lock_guard<std::mutex> g(mu);
+                    if (n != callNumber) return;
+                    progress.assign(b.data(), b.data() + b.size());
+                    progressFresh = true;
+                });
             }, done);
             callId = call.id;
             st = call.status;
@@ -819,7 +900,7 @@ struct CallRecord : Record {
     {
         {
             std::lock_guard<std::mutex> g(mu);
-            const bool had = fn || task;
+            const bool had = calls != nullptr;
             // A call queued for this handle would go out on the next node, late, so it fails as one in flight does.
             if (step == Step::Busy || (step == Step::Ready && had)) {
                 fault = why;
@@ -827,8 +908,12 @@ struct CallRecord : Record {
             }
             if (had) down = true;
         }
-        fn.reset();
-        task.reset();
+        if (!calls) return;
+        {
+            std::lock_guard<std::mutex> g(calls->mu);
+            calls->users.erase(std::find(calls->users.begin(), calls->users.end(), this));
+        }
+        calls.reset();
     }
 };
 
@@ -944,14 +1029,17 @@ bool Build(rant::Node& node, Record& e, uint64_t epoch)
         e.reflectionSeen = 0;
         e.settleAt = Clock::time_point{};
     }
-    e.typedHandle = !viaMessage || e.messageSchema;
+    if (e.messageEpoch != epoch) e.answersFound = false;
+    for (int i = 1; i < 3; ++i) e.unwired[i] = i < e.Parts() && schema[i] == UNWIRED;
+    if (e.AnswersUnwired() && !e.answersFound) e.reflectionSeen = 0;
     e.builtViaMessage = viaMessage;
     e.messageFor = messageType;
     e.messageEpoch = epoch;
     e.node = &node;
+    e.typesKnown = e.TypesFound();
     // A part not walked yet builds once its layout moves layoutGen, so there is nothing to retry.
-    // Nor does a message's type, which Service looks for.
-    if (!e.typedHandle) return true;
+    // Nor does a type left to the mesh, which Service looks for.
+    if (!e.typesKnown) return true;
     for (int i = 0; i < e.Parts(); ++i)
         if (schema[i].empty() && !(i == VALUE && viaMessage)) return true;
     try {
@@ -1257,6 +1345,20 @@ int Entity(int kind, int handle, const char* name, size_t length)
     return handle;
 }
 
+void Unwired(int handle, int which)
+{
+    Record* e = Find(handle);
+    Layout* l = Part(e, which);
+    if (!l || l->unwired) return;
+    std::unique_lock<std::mutex> g = Try(*e);
+    if (!g.owns_lock()) return;
+    // A pin wired again walks its type again.
+    l->unwired = true;
+    l->done = false;
+    e->schema[which] = UNWIRED;
+    ++e->layoutGen;
+}
+
 bool NeedsLayout(int handle, int which, uintptr_t type)
 {
     Layout* l = Part(Find(handle), which);
@@ -1288,6 +1390,7 @@ void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample)
     Layout* l = Part(e, which);
     if (!l) return;
     l->type = type;
+    l->unwired = false;
     Finish(*l, sample);
     std::unique_lock<std::mutex> g = Try(*e);
     if (!g.owns_lock()) {
@@ -1546,9 +1649,9 @@ int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLen
             e->step = Step::Failed;
             return e->shown = 3;
         }
+        e->typeDeadline = Clock::now() + TYPE_WAIT;
         if (message) {
             Keep(e->messageOut, e->messageRead);
-            e->typeDeadline = Clock::now() + TYPE_WAIT;
         } else {
             e->out = e->scratch;
         }
@@ -1567,14 +1670,14 @@ int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLen
                 e->cancel = true;
                 Wake();
             }
-            if (e->progressFresh && Fits(e->parts[PROGRESS], progressLength)) {
+            if (e->progressFresh && (!progress || Fits(e->parts[PROGRESS], progressLength))) {
                 e->progressFresh = false;
-                Decode(e->parts[PROGRESS], e->progress.data(), e->progress.size(), progress);
+                if (progress) Decode(e->parts[PROGRESS], e->progress.data(), e->progress.size(), progress);
             }
             return e->shown = 1;
         case Step::Done:
             if (!e->in.empty()) {
-                const bool fits = Fits(rsp, responseLength) && Decode(rsp, e->in.data(), e->in.size(), response);
+                const bool fits = !response || (Fits(rsp, responseLength) && Decode(rsp, e->in.data(), e->in.size(), response));
                 e->in.clear();
                 if (!fits) {
                     e->fault = "the response does not fit the PLC's Response";

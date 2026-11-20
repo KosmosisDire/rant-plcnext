@@ -24,9 +24,10 @@ namespace Rant
         public Any Request;
         [Input, DataType("STRING")]
         public IecString80 TypeName;
-        [InOut, DataType("ANY")]
+        // Inputs the block writes through, so a call that wants neither leaves them unconnected.
+        [Input, DataType("ANY")]
         public Any Progress;
-        [InOut, DataType("ANY")]
+        [Input, DataType("ANY")]
         public Any Response;
         [Output]
         public bool Busy;
@@ -55,7 +56,7 @@ namespace Rant
             // A message, or none at all, goes out as the target's type with the fields it names.
             bool message = Layout.IsMessage(Request) || Request.pValue == null;
             bool request = message || Layout.Describe(handle, 0, Request);
-            if (Layout.Describe(handle, 1, Response) && Layout.Describe(handle, 2, Progress))
+            if (Layout.Optional(handle, 1, Response) && Layout.Optional(handle, 2, Progress))
                 state = Runtime.Call(handle, Execute, Cancel, request ? (UIntPtr)Request.pValue : UIntPtr.Zero,
                     request ? (int)Request.nLength : 0, (UIntPtr)Progress.pValue, (int)Progress.nLength,
                     (UIntPtr)Response.pValue, (int)Response.nLength, message,

@@ -42,6 +42,7 @@ for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("Rant
                      ("RantTest/MsgAmbText", "string"), ("RantTest/MsgBadText", "string"),
                      ("RantTest/MsgFnSeen", Double3), ("RantTest/MsgStd", Double3), ("RantTest/Lit", "i32"),
                      ("RantTest/EmptyFnSeen", "i32"), ("RantTest/MsgFnDefault", Double3),
+                     ("RantTest/BareCallDone", "bool"), ("RantTest/BareTaskDone", "bool"),
                      ("RantTest/NoneText", "string")]:
     node.subscriber(name, schema, keep(name), reliable=True, catch_up=1)
 
@@ -126,6 +127,16 @@ def slow_task(req, ctx):
 
 
 node.task_definition("RantTest/Slow", slow_task, Double3, Double3, Double3)
+quick_calls = []
+
+
+def quick_task(req, ctx):
+    quick_calls.append(req.x)
+    ctx.progress(Double3(x=1.0))
+    return Double3(x=req.x * 2)
+
+
+node.task_definition("RantTest/Quick", quick_task, Double3, Double3, Double3)
 # A second node, so MsgTwo and MsgAmb each have two readers of two types.
 node2 = rant.Node("msg_readers_pc", domain=0)
 for name, schema in [("RantTest/MsgCmd", CMD), ("RantTest/MsgBad", CMD), ("RantTest/MsgTwo", "MsgTwoB { x: f64, y: f64 }"),
@@ -282,6 +293,8 @@ with lock:
     fn = list(seen.get("RantTest/MsgFnSeen", []))
     empty = list(seen.get("RantTest/EmptyFnSeen", []))
     default = list(seen.get("RantTest/MsgFnDefault", []))
+    bare_call = list(seen.get("RantTest/BareCallDone", []))
+    bare_task = list(seen.get("RantTest/BareTaskDone", []))
     lit = list(seen.get("RantTest/Lit", []))
     none = list(seen.get("RantTest/NoneText", []))
 check("Msg into a Publisher, as the reader's type", last is not None and last["enabled"] is True and last["mode"] == 7
@@ -292,6 +305,8 @@ check("TypeName names a standard type", std is not None and std.x == 1.0 and std
 check("Msg with a value for a field name sets Error", any("Field1 wants a field name" in t for t in bad), bad[-1:])
 check("Msg as a RemoteFunction's request", any(r.x == 7.0 and r.z == 3.0 for r in fn), fn[-1:])
 check("No Request calls a function of Empty", 42 in empty, empty[-1:])
+check("No Response: the call is Done, beside a call that takes the answer", True in bare_call and 42 in empty, bare_call[-3:])
+check("No Progress or Response: the task is Done", True in bare_task and 2.0 in quick_calls, (bare_task[-3:], quick_calls[-3:]))
 check("No Request sends the function's type at its defaults",
       any(r.x == 0.0 and r.y == 0.0 and r.z == 0.0 for r in default) and not any(r.x == 7.0 for r in default), default[-3:])
 check("A literal into Publisher's Value", lit[-1:] == [77], lit[-1:])
@@ -363,6 +378,8 @@ time.sleep(0.5)
 ours = [l for l in plc_logs if l.text == "hello from the PLC log"]
 check("Log, a rising Execute sends one line", len(ours) == 1 and ours[0].level == rant.Level.WARN,
       [(l.level, l.text) for l in plc_logs[-3:]])
+collisions = [l.text for l in plc_logs if "name-collision" in l.text]
+check("Blocks calling one function share its handle", not collisions, collisions[:2])
 
 # Status: Active raises a clearable condition, a clear from here holds it down and pulses Cleared.
 status_on.set(True)

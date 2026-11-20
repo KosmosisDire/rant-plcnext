@@ -76,6 +76,11 @@ namespace Rant
         {
         }
 
+        // An optional pin the program left unconnected: its part takes any value and drops it.
+        public static void Unwired(int handle, int which)
+        {
+        }
+
         // Publisher and VariableWriter: queues the value when it changed or send is set. When message
         // is set, data is a Msg block's message, sent as the type typeName names. A writer's first
         // value is no change. Returns the values sent.

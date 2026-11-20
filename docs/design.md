@@ -64,6 +64,11 @@ unconnected on a RemoteFunction or RemoteTask is a message with no fields.
   of one function, one typed sooner, would collide on its name. A topic's one type is taken
   only after it stayed the only one for a second, since readers show up one by one.
 - A call made before the type is found waits up to a second for it, then fails with why.
+- Rant keeps one call handle per function or task name on a node, so every block calling it
+  shares one (`SharedCall`). Each call is numbered and its answer reaches only a block still
+  using the handle. Blocks wanting other types for one function set Error.
+- A remote call's `Progress` or `Response` left unconnected takes the provider's type, found the
+  same way as a message's, so it shares the handle with a block that wires the pin.
 - A VariableWriter's handle has the owner's type cut down to the fields its message names,
   under the same type names (`SubsetText`), so Rant's field writes mark only those. Other names
   make the handle again. A path into an array or a standard type cannot be cut out, and a node

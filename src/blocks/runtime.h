@@ -35,6 +35,8 @@ int  Field(int handle, int which, int parent, const char* name, const char* spac
 void Bound(int handle, int which, int node, const char* name, int value);
 void Option(int handle, int which, int node, const char* name, int value);
 void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample);
+// An optional pin the program left unconnected: its part takes any value and drops it.
+void Unwired(int handle, int which);
 
 // Publisher and VariableWriter: queues the value when it changed or send is set. When message is
 // set, data is a Msg block's message, sent as the type named type. A writer's first value is no
@@ -53,7 +55,7 @@ int Serve(int handle, uint8_t* request, int requestLength, uint8_t* progress, in
 // TaskDefinition: fails the call in hand with reason.
 void Reject(int handle, const char* reason, size_t length);
 // RemoteFunction and RemoteTask: 0 idle, 1 busy with progress written as it comes, 2 done with
-// response written, 3 failed. cancel asks the provider of a running task to stop. When message is
+// response written, 3 failed. A null progress or response is a pin left unconnected. cancel asks the provider of a running task to stop. When message is
 // set, request is a Msg block's message, or null for none, sent as the type named type.
 int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLength, uint8_t* progress,
          int progressLength, uint8_t* response, int responseLength, bool message, const char* type,

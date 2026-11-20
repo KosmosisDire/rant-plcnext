@@ -147,6 +147,12 @@ VAR
     default_call : RemoteFunction;
     default_rsp : Double3;
     seen_default : Publisher;
+    bare_call : RemoteFunction;
+    bare_call_done : BOOL;
+    seen_bare_call : Publisher;
+    bare_task : RemoteTask;
+    bare_task_done : BOOL;
+    seen_bare_task : Publisher;
     lit_pub : Publisher;
     none_pub : Publisher;
     none_text : STRING;
@@ -352,6 +358,13 @@ empty_call(Name := STRING#'RantTest/EmptyFn', Execute := msg_go, Response := emp
 seen_empty(Topic := STRING#'RantTest/EmptyFnSeen', Value := empty_rsp);
 default_call(Name := STRING#'RantTest/MsgFn', Execute := msg_go, Response := default_rsp);
 seen_default(Topic := STRING#'RantTest/MsgFnDefault', Value := default_rsp);
+(* Response and Progress left unconnected: calls that want no answer, beside one that does. *)
+bare_call(Name := STRING#'RantTest/EmptyFn', Execute := msg_go);
+bare_call_done := bare_call.Done;
+seen_bare_call(Topic := STRING#'RantTest/BareCallDone', Value := bare_call_done);
+bare_task(Name := STRING#'RantTest/Quick', Execute := msg_go, Request := Msg1(STRING#'x', LREAL#2.0));
+bare_task_done := bare_task.Done;
+seen_bare_task(Topic := STRING#'RantTest/BareTaskDone', Value := bare_task_done);
 (* Value is an input, so it takes a literal, and a block given neither pin says so. *)
 lit_pub(Topic := STRING#'RantTest/Lit', Value := DINT#77);
 none_pub(Topic := STRING#'RantTest/None');

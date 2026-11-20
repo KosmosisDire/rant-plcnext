@@ -38,6 +38,7 @@ struct Layout {
     std::vector<Node> nodes;
     uintptr_t         type = 0;     // the eCLR type handle the nodes describe
     bool              done = false;
+    bool              unwired = false;   // an optional pin left unconnected, so any value goes
     plc::Member       root;         // the value as Rant sees it, once done
     std::string       schema;       // its schema text, once done
     std::string       error;        // why the type cannot reach the mesh, empty when it can

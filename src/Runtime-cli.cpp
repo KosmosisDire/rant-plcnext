@@ -77,6 +77,11 @@ void __PInvoke__ Rant::Runtime::LayoutDone(Int32 p0, Int32 p1, UIntPtr p2, UIntP
     blocks::LayoutDone(p0, p1, p2, Bytes(p3));
 }
 
+void __PInvoke__ Rant::Runtime::Unwired(Int32 p0, Int32 p1)
+{
+    blocks::Unwired(p0, p1);
+}
+
 Int32 __PInvoke__ Rant::Runtime::Publish(Int32 p0, UIntPtr p1, Int32 p2, Boolean p3, Boolean p4,
                                          pcoslib::IecString80* p5)
 {
