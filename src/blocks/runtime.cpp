@@ -1,6 +1,7 @@
 #include "blocks/runtime.h"
 
 #include "blocks/layout.h"
+#include "blocks/message.h"
 #include "core/log.h"
 
 #include "rant.hpp"
@@ -38,6 +39,8 @@ constexpr size_t MAX_ENTITIES = 0xffff;
 constexpr auto OPEN_GRACE = std::chrono::milliseconds(500);
 constexpr auto RETRY      = std::chrono::seconds(2);
 constexpr auto IDLE_WAKE  = std::chrono::milliseconds(50);
+// A message call waits this long for its request type, as long as Rant's first send waits for a match.
+constexpr auto TYPE_WAIT  = std::chrono::seconds(1);
 // The node waits this long for a browsing mirror, so it opens once with room for its variables.
 constexpr auto MIRROR_WAIT = std::chrono::seconds(20);
 
@@ -97,14 +100,40 @@ struct Record {
 
     bool                 unlogged = false; // error holds a reason the node thread has not logged yet
 
+    // A Message input in place of the value or request, under mu: the type Msg named, empty for
+    // the target's own, and the message the node thread sends next.
+    bool                 viaMessage = false;
+    std::string          messageType;
+    msg::Message         messageOut;
+    // The task's side of it.
+    msg::Message         messageRead, messageLast;
+    bool                 hasMessageLast = false;
+
     // The node thread's side.
     uint64_t builtGen = 0;
     uint64_t builtEpoch = 0;
     Clock::time_point buildAgainAt{};       // a Make that threw is tried again from then
     bool freeing = false;                   // dropped by this pass, so it is freed under s.mu
+    rant::Node* node = nullptr;             // the node the handle is on
+    // The handle sends messages of messageSchema, empty until the target's type is found, which
+    // holds for messageFor on the node of messageEpoch.
+    bool builtViaMessage = false;
+    bool typedHandle = true;                // false while a message handle waits to be made with its type
+    bool retyping = false;                  // the next build only gives the handle its found type
+    rant::Schema messageSchema;
+    std::string messageFor;
+    uint64_t messageEpoch = 0;
+    uint32_t reflectionSeen = 0;            // the mesh epoch the last search for the type read
+    Clock::time_point settleAt{};           // a topic's one type is taken from then, unless another came
+    msg::Message messageSending;
 
     explicit Record(Kind k) : kind(k) {}
     virtual ~Record() = default;
+    // The type the handle's value or request has: the found one for messages, else the walked one.
+    rant::Schema ValueSchema(rant::Node& n, const std::string (&schema)[3]) const
+    {
+        return builtViaMessage ? messageSchema : n.schema(schema[0]);
+    }
     virtual int Parts() const { return 1; }
     // Makes the Rant handle from the parts' schemas, value being the last one out. Throws when it cannot.
     virtual void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>& value) = 0;
@@ -249,156 +278,287 @@ rant::Qos Catching()
 
 Bytes View(const std::vector<uint8_t>& v) { return Bytes(v.data(), v.size()); }
 
-// Publisher: sends a value the task changed, or one it asked to send.
+// What a block says when its Message input holds no message.
+constexpr char STALE_MESSAGE[] = "Message holds no message: wire Msg into it, in the cycle that builds it";
+
+bool SameMessage(const msg::Message& a, const msg::Message& b)
+{
+    return a.entries == b.entries && a.fault == b.fault && a.type == b.type;
+}
+
+// A copy into buffers that keep their capacity, so a cycle does not allocate.
+void Keep(msg::Message& to, const msg::Message& from)
+{
+    to.type = from.type;
+    to.fault = from.fault;
+    to.entries = from.entries;
+}
+
+// The type a Message goes out as: the target's own, or among a topic's the one Msg named. Its
+// handle is untyped until then, which is what lets the node see its readers or owner. Empty
+// with why while there is none, or a topic has several and Msg named none.
+rant::Schema FindType(rant::Node& node, const Record& e, std::string& why)
+{
+    const std::string& type = e.messageFor;
+    if (!type.empty() && rant::detail::rant_std_by_name({ type.data(), type.size() }) != rant::detail::RANT_STD_NONE)
+        return node.schema(type);
+    const rant::Reflection r = node.reflection();
+    std::vector<rant::Schema> found;
+    if (e.kind == Kind::Publisher) {
+        std::vector<uint32_t> peers{ 0 };
+        for (const rant::Peer& p : r.peers())
+            if (p.active) peers.push_back(p.id);
+        for (uint32_t peer : peers)
+            for (const rant::Entity& x : r.entities(peer)) {
+                if (x.kind != rant::EntityKind::Topic || x.name != e.name || !x.schema) continue;
+                if (!type.empty() && x.schema.name() != type) continue;
+                if (std::none_of(found.begin(), found.end(), [&](const rant::Schema& s) { return s.hash() == x.schema.hash(); }))
+                    found.push_back(x.schema);
+            }
+    } else {
+        const rant::EntityKind k = e.kind == Kind::RemoteFunction ? rant::EntityKind::Function
+                                 : e.kind == Kind::RemoteTask     ? rant::EntityKind::Task
+                                                                  : rant::EntityKind::Variable;
+        const std::optional<rant::Entity> x = r.find(k, e.name);
+        if (x && x->provides && x->schema && (type.empty() || x->schema.name() == type)) found.push_back(x->schema);
+    }
+    if (found.size() == 1) return found[0];
+    if (found.size() > 1)
+        why = e.name + " has " + std::to_string(found.size()) + " types, name one as Msg's first input";
+    else if (e.kind != Kind::Publisher)
+        why = type.empty() ? "no owner of " + e.name + " is on the mesh yet" : "the owner of " + e.name + " takes no " + type;
+    else
+        why = type.empty() ? "no node reading " + e.name + " has a type yet, name one as Msg's first input"
+                           : "no node reading " + e.name + " has the type " + type;
+    return rant::Schema();
+}
+
+// Looks for the type once the mesh changed, and has the handle made again with it once found.
+// False with why while it is not found.
+bool ResolveType(Record& e, std::string& why)
+{
+    if (!e.node) return false;
+    const uint32_t seen = e.node->reflection().epoch();
+    const bool settled = e.settleAt != Clock::time_point{} && Clock::now() >= e.settleAt;
+    if (seen == e.reflectionSeen && !settled) return false;
+    e.reflectionSeen = seen;
+    const rant::Schema found = FindType(*e.node, e, why);
+    if (!found) {
+        e.settleAt = Clock::time_point{};
+        return false;
+    }
+    // A topic's readers show up one by one, so its one type counts once no other came for a while.
+    if (e.kind == Kind::Publisher && e.messageFor.empty() && !settled) {
+        if (e.settleAt == Clock::time_point{}) e.settleAt = Clock::now() + TYPE_WAIT;
+        return false;
+    }
+    e.settleAt = Clock::time_point{};
+    e.messageSchema = found;
+    e.retyping = true;
+    std::lock_guard<std::mutex> g(e.mu);
+    ++e.layoutGen;
+    return true;
+}
+
+// Publisher and VariableWriter: send a value the task changed, or one it asked to send. A writer
+// changes another node's variable, and a message writer only the fields its message names.
 struct PublisherRecord : Record {
     bool ready = false;    // out holds a value to send
     bool resend = false;   // the next value goes out even unchanged, since the handle is new
     bool sendAsked = false;   // the task's own: Send was set since the last value queued
-    std::optional<rant::Publisher<Bytes>> pub;
+    // A writer's: the node closed after it had a handle, so a change is not sent late.
+    bool down = false;
+    std::optional<rant::Publisher<Bytes>>      pub;
+    std::optional<rant::RemoteVariable<Bytes>> writer;
+    // A message writer's handle has a type of just the fields its message names, subsetNames.
+    rant::Schema subset;
+    std::vector<std::string> subsetNames;
+    std::vector<std::string> names;   // node thread only
 
-    PublisherRecord() : Record(Kind::Publisher) {}
-    static bool Holds(Kind k) { return k == Kind::Publisher; }
+    explicit PublisherRecord(Kind k) : Record(k) {}
+    static bool Holds(Kind k) { return k == Kind::Publisher || k == Kind::VariableWriter; }
+    bool Writes() const { return kind == Kind::VariableWriter; }
 
     void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>&) override
     {
-        // A block publishes on change, so a change must arrive and a late reader gets the last.
-        rant::Qos q = Catching();
-        q.keep_last = 1;
-        pub = node.publisher<Bytes>(name, q, node.schema(schema[VALUE]));
-        std::lock_guard<std::mutex> g(mu);
-        resend = true;
-    }
-    void Service() override
-    {
-        {
-            std::lock_guard<std::mutex> g(mu);
-            if (!ready || !pub) return;
-            out.swap(sendBuf);
-            ready = false;
-        }
-        const rant::SendStatus st = pub->send(View(sendBuf));
-        if (st == rant::SendStatus::Ok) {
-            std::lock_guard<std::mutex> g(mu);
-            ++count;
-            error.clear();
-        } else if (st == rant::SendStatus::NoTopic) {
-            // The value found no topic, so the block sends it again.
+        if (!Writes()) {
+            // A block publishes on change, so a change must arrive and a late reader gets the last.
+            rant::Qos q = Catching();
+            q.keep_last = 1;
+            pub = node.publisher<Bytes>(name, q, ValueSchema(node, schema));
             std::lock_guard<std::mutex> g(mu);
             resend = true;
-        } else {
-            Fail(*this, Status("a value was refused", st));
+            return;
         }
-    }
-    void Drop(const char*) override { pub.reset(); }
-};
-
-// Subscriber: keeps the newest value for the task.
-struct SubscriberRecord : Record {
-    std::optional<rant::Subscriber<Bytes>> sub;
-
-    SubscriberRecord() : Record(Kind::Subscriber) {}
-    static bool Holds(Kind k) { return k == Kind::Subscriber; }
-
-    void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>&) override
-    {
-        sub = node.subscriber<Bytes>(name, [this](const rant::MessageView& m) {
-            const Bytes b = m.data();
-            std::lock_guard<std::mutex> g(mu);
-            in.assign(b.data(), b.data() + b.size());
-            fresh = true;
-            ++count;
-        }, Catching(), node.schema(schema[VALUE]));
-    }
-    void Service() override {}
-    void Drop(const char*) override { sub.reset(); }
-};
-
-// VariableDefinition and RemoteVariable: a value both the task and the mesh may change.
-struct VariableRecord : Record {
-    enum class Send { Idle, Ready, Sending };
-    Send send = Send::Idle;
-    // A remote's set waits for the owner to echo it, so an owner value sent before it never wins.
-    bool awaitEcho = false;
-    bool held = false;     // in holds an owner value that came before the echo
-    Clock::time_point echoDeadline;
-    // The node closed after this record had a handle. Only a write made before Rant first started waits.
-    bool down = false;
-    std::optional<rant::VariableDefinition<Bytes>> var;
-    std::optional<rant::RemoteVariable<Bytes>>     remote;
-
-    explicit VariableRecord(Kind k) : Record(k) {}
-    static bool Holds(Kind k) { return k == Kind::VariableDefinition || k == Kind::RemoteVariable; }
-    bool Owner() const { return kind == Kind::VariableDefinition; }
-    rant::VariableDefinition<Bytes>* Var()
-    {
-        if (var) return &*var;
-        return remote ? &*remote : nullptr;
-    }
-
-    void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>& value) override
-    {
-        const bool owner = Owner();
-        rant::VariableOptions<Bytes> o;
-        if (owner && !value.empty()) o.initial = View(value);
-        if (owner) var = node.variable_definition<Bytes>(name, o, node.schema(schema[VALUE]));
-        else remote = node.remote_variable<Bytes>(name, o, node.schema(schema[VALUE]));
-        // A remote hears every owner value, since the echo of a set that changes nothing is one too.
-        auto heard = [this, owner](const rant::VariableUpdate& u) {
-            const Bytes b = u.value();
-            std::lock_guard<std::mutex> g(mu);
-            if (!owner && awaitEcho) {
-                // The echo of the set ends the wait. A value before it is held for the deadline.
-                const bool echo = b.size() == sendBuf.size() && std::equal(b.data(), b.data() + b.size(), sendBuf.data());
-                awaitEcho = !echo;
-                held = !echo;
-                in.assign(b.data(), b.data() + b.size());
-                fresh = false;
-                return;
+        subset = rant::Schema();
+        if (builtViaMessage && messageSchema) {
+            {
+                std::lock_guard<std::mutex> g(mu);
+                msg::Names(messageOut, subsetNames);
             }
-            in.assign(b.data(), b.data() + b.size());
-            // The owner's own sets come back here too, and only a write from elsewhere is news.
-            fresh = !owner || u.source() != 0;
-        };
-        if (owner) Var()->on_change(heard);
-        else Var()->on_write(heard);
+            std::string why;
+            const std::string text = msg::SubsetText(messageSchema.raw(), subsetNames, why);
+            if (!why.empty()) throw std::runtime_error(why);
+            subset = node.schema(text);
+        }
+        writer = node.remote_variable<Bytes>(name, rant::VariableOptions<Bytes>{}, subset ? subset : ValueSchema(node, schema));
         std::lock_guard<std::mutex> g(mu);
         down = false;
     }
     void Service() override
     {
-        rant::VariableDefinition<Bytes>* v = Var();
+        // A message waits, queued, until the type it goes out as is found.
+        std::string why;
+        if (!typedHandle) {
+            if (!messageSchema && !ResolveType(*this, why) && !why.empty()) Fail(*this, why);
+            return;
+        }
         {
             std::lock_guard<std::mutex> g(mu);
-            if (send != Send::Ready || !v) return;
+            if (!ready || !(pub || writer)) return;
+            if (builtViaMessage) {
+                // A writer's type holds the fields its message names, so other names make it again.
+                if (Writes()) {
+                    msg::Names(messageOut, names);
+                    if (names != subsetNames) {
+                        ++layoutGen;
+                        return;
+                    }
+                }
+                Keep(messageSending, messageOut);
+            } else {
+                out.swap(sendBuf);
+            }
+            ready = false;
+        }
+        if (builtViaMessage && !msg::Apply(messageSending, (subset ? subset : messageSchema).raw(), sendBuf, why)) {
+            Fail(*this, why);
+            return;
+        }
+        const rant::SendStatus st = Writes() ? writer->set(View(sendBuf)) : pub->send(View(sendBuf));
+        if (st == rant::SendStatus::Ok) {
+            std::lock_guard<std::mutex> g(mu);
+            ++count;
+            error.clear();
+        } else if (st == rant::SendStatus::NoTopic && Writes()) {
+            // A write the owner cannot get is not kept for later, since it would land stale.
+            Fail(*this, "no owner of " + name + ", the write was not applied");
+        } else if (st == rant::SendStatus::NoTopic) {
+            // The value found no topic, so the block sends it again.
+            std::lock_guard<std::mutex> g(mu);
+            resend = true;
+        } else {
+            Fail(*this, Status(Writes() ? "a write was refused" : "a value was refused", st));
+        }
+    }
+    void Drop(const char*) override
+    {
+        {
+            std::lock_guard<std::mutex> g(mu);
+            if (writer) down = true;
+        }
+        pub.reset();
+        writer.reset();
+    }
+};
+
+// Subscriber and VariableReader: keep the newest value for the task.
+struct SubscriberRecord : Record {
+    std::optional<rant::Subscriber<Bytes>>     sub;
+    std::optional<rant::RemoteVariable<Bytes>> var;
+    Reader reader;                  // node thread only
+    std::vector<uint8_t> heard;     // node thread only, a value in the block's own schema
+
+    explicit SubscriberRecord(Kind k) : Record(k) {}
+    static bool Holds(Kind k) { return k == Kind::Subscriber || k == Kind::VariableReader; }
+
+    void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>&) override
+    {
+        const rant::Schema own = node.schema(schema[VALUE]);
+        reader.Reset(own.raw());
+        if (kind == Kind::VariableReader) {
+            rant::VariableOptions<Bytes> o;
+            o.read_only = true;
+            var = node.remote_variable<Bytes>(name, o, own);
+            var->on_change([this](const rant::VariableUpdate& u) { Heard(u.value(), u.raw_schema()); });
+            return;
+        }
+        sub = node.subscriber<Bytes>(name, [this](const rant::MessageView& m) { Heard(m.data(), m.raw_schema()); },
+                                     Catching(), own);
+    }
+    void Heard(Bytes data, const rant::detail::RantSchema* schema)
+    {
+        // A value that does not fit goes on as it came, and the task reports it.
+        if (!reader.Own(data, schema, heard)) heard.assign(data.data(), data.data() + data.size());
+        std::lock_guard<std::mutex> g(mu);
+        in.swap(heard);
+        fresh = true;
+        ++count;
+    }
+    void Service() override {}
+    void Drop(const char*) override
+    {
+        sub.reset();
+        var.reset();
+    }
+};
+
+// VariableDefinition: a value both the task and the mesh may change.
+struct VariableRecord : Record {
+    enum class Send { Idle, Ready, Sending };
+    Send send = Send::Idle;
+    // The node closed after this record had a handle. Only a write made before Rant first started waits.
+    bool down = false;
+    std::optional<rant::VariableDefinition<Bytes>> var;
+    Reader reader;                  // node thread only
+    std::vector<uint8_t> heard;     // node thread only, a value in the block's own schema
+
+    VariableRecord() : Record(Kind::VariableDefinition) {}
+    static bool Holds(Kind k) { return k == Kind::VariableDefinition; }
+
+    void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>& value) override
+    {
+        const rant::Schema own = node.schema(schema[VALUE]);
+        reader.Reset(own.raw());
+        rant::VariableOptions<Bytes> o;
+        if (!value.empty()) o.initial = View(value);
+        var = node.variable_definition<Bytes>(name, o, own);
+        var->on_change([this](const rant::VariableUpdate& u) {
+            // A value that does not fit goes on as it came, and the task reports it.
+            if (!reader.Own(u.value(), u.raw_schema(), heard)) heard.assign(u.value().data(), u.value().data() + u.value().size());
+            std::lock_guard<std::mutex> g(mu);
+            in.swap(heard);
+            // The owner's own sets come back here too, and only a write from elsewhere is news.
+            fresh = u.source() != 0;
+        });
+        std::lock_guard<std::mutex> g(mu);
+        down = false;
+    }
+    void Service() override
+    {
+        {
+            std::lock_guard<std::mutex> g(mu);
+            if (send != Send::Ready || !var) return;
             sendBuf = out;
             send = Send::Sending;
             // A mesh value that came before this set is older than it.
             fresh = false;
-            held = false;
-            if (!Owner()) {
-                awaitEcho = true;
-                echoDeadline = Clock::now() + std::chrono::seconds(1);
-            }
         }
-        const rant::SendStatus st = v->set(View(sendBuf));
+        const rant::SendStatus st = var->set(View(sendBuf));
         {
             std::lock_guard<std::mutex> g(mu);
             if (send == Send::Sending) send = Send::Idle;
-            if (st != rant::SendStatus::Ok) awaitEcho = false;
         }
-        // A write the owner cannot get is not kept for later, since it would land stale.
         if (st == rant::SendStatus::Ok) ClearError(*this);
-        else if (st == rant::SendStatus::NoTopic) Fail(*this, "no owner of " + name + ", the write was not applied");
         else Fail(*this, Status("a write was refused", st));
     }
     void Drop(const char*) override
     {
         {
             std::lock_guard<std::mutex> g(mu);
-            if (var || remote) down = true;
+            if (var) down = true;
         }
         var.reset();
-        remote.reset();
     }
 };
 
@@ -560,6 +720,9 @@ struct CallRecord : Record {
     uint32_t callId = 0;        // a task call in flight
     // The node closed after this record had a handle. Only a call made before Rant first started waits.
     bool down = false;
+    // A message call fails once it waited this long for its request type, with the last reason.
+    Clock::time_point typeDeadline{};
+    std::string lastWhy;   // node thread only
     std::optional<rant::RemoteFunction<Bytes, Bytes>>        fn;
     std::optional<rant::RemoteTask<Bytes, Bytes, Bytes>>     task;
 
@@ -571,10 +734,10 @@ struct CallRecord : Record {
     void Make(rant::Node& node, const std::string (&schema)[3], const std::vector<uint8_t>&) override
     {
         if (IsTask())
-            task = node.remote_task<Bytes, Bytes, Bytes>(name, rant::TaskOptions{}, node.schema(schema[VALUE]),
+            task = node.remote_task<Bytes, Bytes, Bytes>(name, rant::TaskOptions{}, ValueSchema(node, schema),
                                                          node.schema(schema[PROGRESS]), node.schema(schema[RESPONSE]));
         else
-            fn = node.remote_function<Bytes, Bytes>(name, rant::FunctionOptions{}, node.schema(schema[VALUE]),
+            fn = node.remote_function<Bytes, Bytes>(name, rant::FunctionOptions{}, ValueSchema(node, schema),
                                                     node.schema(schema[RESPONSE]));
         std::lock_guard<std::mutex> g(mu);
         down = false;
@@ -598,6 +761,17 @@ struct CallRecord : Record {
     }
     void Service() override
     {
+        // The request's type is looked for from the start, so a call seldom waits for it.
+        std::string why;
+        if (!typedHandle) {
+            if (!messageSchema && !ResolveType(*this, why) && !why.empty()) lastWhy = std::move(why);
+            std::lock_guard<std::mutex> g(mu);
+            if (step == Step::Ready && !messageSchema && Clock::now() >= typeDeadline) {
+                fault = lastWhy;
+                step = Step::Failed;
+            }
+            return;
+        }
         bool cancelNow = false;
         {
             std::lock_guard<std::mutex> g(mu);
@@ -605,12 +779,23 @@ struct CallRecord : Record {
                 cancelNow = cancelSent = true;
             } else {
                 if (step != Step::Ready || !(fn || task)) return;
-                out.swap(sendBuf);
+                if (builtViaMessage) {
+                    messageSending.entries.swap(messageOut.entries);
+                    messageSending.fault.swap(messageOut.fault);
+                } else {
+                    out.swap(sendBuf);
+                }
                 step = Step::Busy;
             }
         }
         if (cancelNow) {
             if (task) task->cancel(callId);
+            return;
+        }
+        if (builtViaMessage && !msg::Apply(messageSending, messageSchema.raw(), sendBuf, why)) {
+            std::lock_guard<std::mutex> g(mu);
+            fault = std::move(why);
+            step = Step::Failed;
             return;
         }
         rant::SendStatus st;
@@ -641,7 +826,8 @@ struct CallRecord : Record {
             std::lock_guard<std::mutex> g(mu);
             const bool had = fn || task;
             // A call queued for this handle would go out on the next node, late, so it fails as one in flight does.
-            if (step == Step::Busy || (step == Step::Ready && had)) {
+            // One waiting for its request type waits on for the typed handle.
+            if (step == Step::Busy || (step == Step::Ready && had && !retyping)) {
                 fault = why;
                 step = Step::Failed;
             }
@@ -725,10 +911,11 @@ struct StatusRecord : Record {
 std::unique_ptr<Record> NewRecord(Kind k)
 {
     switch (k) {
-        case Kind::Publisher:          return std::make_unique<PublisherRecord>();
-        case Kind::Subscriber:         return std::make_unique<SubscriberRecord>();
-        case Kind::VariableDefinition:
-        case Kind::RemoteVariable:     return std::make_unique<VariableRecord>(k);
+        case Kind::Publisher:
+        case Kind::VariableWriter:     return std::make_unique<PublisherRecord>(k);
+        case Kind::Subscriber:
+        case Kind::VariableReader:     return std::make_unique<SubscriberRecord>(k);
+        case Kind::VariableDefinition: return std::make_unique<VariableRecord>();
         case Kind::FunctionDefinition:
         case Kind::TaskDefinition:     return std::make_unique<ServeRecord>(k);
         case Kind::RemoteFunction:
@@ -742,20 +929,36 @@ std::unique_ptr<Record> NewRecord(Kind k)
 template <class T> T* As(Record* e) { return e && T::Holds(e->kind) ? static_cast<T*>(e) : nullptr; }
 
 // Makes the entity's Rant handle on node, or records why it cannot. False when Make threw, to try again.
-bool Build(rant::Node& node, Record& e)
+bool Build(rant::Node& node, Record& e, uint64_t epoch)
 {
     std::string schema[3];
     std::vector<uint8_t> value;
+    bool viaMessage;
+    std::string messageType;
     {
         std::lock_guard<std::mutex> g(e.mu);
         for (int i = 0; i < 3; ++i) schema[i] = e.schema[i];
         e.builtGen = e.layoutGen;
         value = e.out;
+        viaMessage = e.viaMessage;
+        messageType = e.messageType;
     }
     e.Drop("the block's type changed");
+    e.retyping = false;
+    // A found type belongs to the node it was found on and the name Msg gave.
+    if (!viaMessage || e.messageFor != messageType || e.messageEpoch != epoch) {
+        e.messageSchema = rant::Schema();
+        e.reflectionSeen = 0;
+        e.settleAt = Clock::time_point{};
+    }
+    e.typedHandle = !viaMessage || e.messageSchema;
+    e.builtViaMessage = viaMessage;
+    e.messageFor = messageType;
+    e.messageEpoch = epoch;
+    e.node = &node;
     // A part not walked yet builds once its layout moves layoutGen, so there is nothing to retry.
     for (int i = 0; i < e.Parts(); ++i)
-        if (schema[i].empty()) return true;
+        if (schema[i].empty() && !(i == VALUE && viaMessage)) return true;
     try {
         e.Make(node, schema, value);
         ClearError(e);
@@ -877,7 +1080,7 @@ void Run()
                     stale = e->builtGen != e->layoutGen;
                 }
                 if (stale || (e->builtEpoch != epoch && now >= e->buildAgainAt)) {
-                    if (Build(*node, *e)) e->builtEpoch = epoch;
+                    if (Build(*node, *e, epoch)) e->builtEpoch = epoch;
                     else e->buildAgainAt = now + RETRY;
                 }
                 std::string unlogged;
@@ -959,6 +1162,21 @@ bool Encode(Record& e, int which, const uint8_t* data, int length)
     return true;
 }
 
+// Moves the record to messages of the type Msg named, or back to its value pin, which builds its
+// handle again. Under the record's lock.
+void Source(Record& e, bool viaMessage)
+{
+    const std::string& type = e.messageRead.type;
+    if (e.viaMessage == viaMessage && (!viaMessage || e.messageType == type)) return;
+    e.viaMessage = viaMessage;
+    if (viaMessage) e.messageType = type;
+    e.hasMessageLast = false;
+    e.hasLast = false;
+    ++e.layoutGen;
+    Wake();
+}
+
+
 } // namespace
 
 void Demote()
@@ -1004,7 +1222,7 @@ int Configure(int& owner, const char* name, size_t length, int domain, bool wasR
 
 int Entity(int kind, int handle, const char* name, size_t length)
 {
-    if (kind < static_cast<int>(Kind::Publisher) || kind > static_cast<int>(Kind::Status) || length == 0) return 0;
+    if (kind < static_cast<int>(Kind::Publisher) || kind > static_cast<int>(Kind::VariableWriter) || length == 0) return 0;
     State& s = S();
     if (Record* e = Find(handle)) {
         const bool same = e->name.size() == length && std::memcmp(e->name.data(), name, length) == 0;
@@ -1102,24 +1320,82 @@ void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample)
     Wake();
 }
 
-int Publish(int handle, uint8_t* data, int length, bool send)
+namespace {
+
+constexpr char NO_VALUE[] = "connect Value or Message";
+
+// A block given neither its value nor a Message says so.
+int NoValue(Record& e)
+{
+    std::unique_lock<std::mutex> g = Try(e);
+    if (g.owns_lock() && e.fault != NO_VALUE) e.fault.assign(NO_VALUE);
+    return e.shown;
+}
+
+// Queues what the task gave once it changed or Send asked. A writer's first value is where the
+// program starts, so it never overwrites the owner, and its change while the node is down is
+// lost, since it would land late. Under the record's lock.
+void Queue(PublisherRecord& e, bool changed, bool first)
+{
+    if (e.fault == NO_VALUE || e.fault == STALE_MESSAGE) e.fault.clear();
+    if (!(e.sendAsked || changed || e.resend)) return;
+    const bool baseline = e.Writes() && first && !e.sendAsked;
+    e.resend = false;
+    e.sendAsked = false;
+    if (baseline) return;
+    if (e.Writes() && e.down) {
+        e.fault.assign(DOWN_WRITE);
+        return;
+    }
+    e.fault.clear();
+    e.ready = true;
+    Wake();
+}
+
+int PublishMessage(PublisherRecord& e, uint32_t message, bool send)
+{
+    e.sendAsked = e.sendAsked || send;
+    const bool read = msg::Read(message, e.messageRead);
+    const bool changed = read && (!e.hasMessageLast || !SameMessage(e.messageRead, e.messageLast));
+    std::unique_lock<std::mutex> g = Try(e);
+    if (!g.owns_lock()) return e.shown;
+    if (!read) {
+        if (e.fault != STALE_MESSAGE) e.fault.assign(STALE_MESSAGE);
+        return e.shown;
+    }
+    Source(e, true);
+    const bool first = !e.hasMessageLast;
+    if (changed || first) {
+        Keep(e.messageLast, e.messageRead);
+        e.hasMessageLast = true;
+        Keep(e.messageOut, e.messageRead);
+    }
+    Queue(e, changed || first, first);
+    return e.shown = Packed(e.count, 0);
+}
+
+} // namespace
+
+int Publish(int handle, uint8_t* data, int length, bool send, uint32_t message)
 {
     PublisherRecord* e = As<PublisherRecord>(Find(handle));
-    if (!e || !Encode(*e, VALUE, data, length)) return 0;
+    if (!e) return 0;
+    if (message) return PublishMessage(*e, message, send);
+    if (!data) return NoValue(*e);
+    if (!Encode(*e, VALUE, data, length)) return 0;
     // A Send of one cycle the lock missed still goes out on the next.
     e->sendAsked = e->sendAsked || send;
     const bool changed = !e->hasLast || e->scratch != e->last;
     std::unique_lock<std::mutex> g = Try(*e);
     if (!g.owns_lock()) return e->shown;
-    if (e->sendAsked || changed || e->resend) {
+    Source(*e, false);
+    const bool first = !e->hasLast;
+    if (changed || first || e->sendAsked || e->resend) {
         e->last = e->scratch;
         e->hasLast = true;
         e->out = e->scratch;
-        e->ready = true;
-        e->resend = false;
-        e->sendAsked = false;
-        Wake();
     }
+    Queue(*e, changed || first, first);
     return e->shown = Packed(e->count, 0);
 }
 
@@ -1151,24 +1427,16 @@ int Share(int handle, uint8_t* data, int length)
     const Layout& l = e->parts[VALUE];
     std::unique_lock<std::mutex> g = Try(*e);
     if (!g.owns_lock()) return e->shown & ~1;
-    // A remote starts from the owner's value, so its own first value is no change.
-    const bool baseline = !e->hasLast && !e->Owner();
     if (!e->hasLast || e->scratch != e->last) {
         e->last = e->scratch;
         e->hasLast = true;
-        if (!baseline && e->down) {
+        if (e->down) {
             e->fault.assign(DOWN_WRITE);
-        } else if (!baseline) {
+        } else {
             e->out = e->scratch;
             e->send = Send::Ready;
             Wake();
         }
-    }
-    // An echo that never came (the owner may skip a value) lets the held value through.
-    if (e->awaitEcho && Clock::now() >= e->echoDeadline) {
-        e->awaitEcho = false;
-        e->fresh = e->held;
-        e->held = false;
     }
     // While the program's change is on its way, the mesh's value waits, since the change follows it.
     if (!e->fresh || e->send != Send::Idle) return e->shown = Packed(e->count, 1);
@@ -1264,25 +1532,37 @@ void Reject(int handle, const char* reason, size_t length)
 }
 
 int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLength, uint8_t* progress,
-         int progressLength, uint8_t* response, int responseLength)
+         int progressLength, uint8_t* response, int responseLength, uint32_t message)
 {
     using Step = CallRecord::Step;
     CallRecord* e = As<CallRecord>(Find(handle));
     if (!e) return 0;
+    const bool read = message && msg::Read(message, e->messageRead);
     std::unique_lock<std::mutex> g = Try(*e);
     // The edge of Execute stays unseen until a cycle holds the lock.
     if (!g.owns_lock()) return e->shown;
+    if (message ? read : request != nullptr) Source(*e, message != 0);
     const bool rising = execute && !e->lastExecute;
     e->lastExecute = execute;
     const Layout& rsp = e->parts[RESPONSE];
-    if (rising && Encode(*e, VALUE, request, requestLength)
-        && (e->step == Step::Idle || e->step == Step::Done || e->step == Step::Failed)) {
+    const bool idle = e->step == Step::Idle || e->step == Step::Done || e->step == Step::Failed;
+    if (rising && idle && (message ? !read : !request)) {
+        e->fault.assign(message ? STALE_MESSAGE : "connect Request or Message");
+        e->step = Step::Failed;
+        return e->shown = 3;
+    }
+    if (rising && idle && (message || Encode(*e, VALUE, request, requestLength))) {
         if (e->down) {
             e->fault.assign(DOWN_CALL);
             e->step = Step::Failed;
             return e->shown = 3;
         }
-        e->out = e->scratch;
+        if (message) {
+            Keep(e->messageOut, e->messageRead);
+            e->typeDeadline = Clock::now() + TYPE_WAIT;
+        } else {
+            e->out = e->scratch;
+        }
         e->fault.clear();
         e->in.clear();
         e->cancel = e->cancelSent = false;

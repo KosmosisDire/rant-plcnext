@@ -22,6 +22,10 @@ def keep(name):
 
 
 node = rant.Node("plc_test_pc", domain=0)
+# A deploy or restart returns about a minute before the PLC program runs, so the test waits for its node.
+deadline = time.time() + 180
+while time.time() < deadline and not any(p.active and p.name == "plc_test" for p in node.reflection.peers()):
+    time.sleep(0.2)
 for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("RantTest/Text", "string"),
                      ("RantTest/PoseSeen", Pose), ("RantTest/TextSeen", "string"),
                      ("RantTest/RemoteResult", Double3), ("RantTest/PcModeSeen", "i32"),
@@ -32,7 +36,12 @@ for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("Rant
                      ("RantTest/FailsText", "string"), ("RantTest/SleepText", "string"),
                      ("RantTest/SleepBusy", "bool"), ("RantTest/OtherNode", "string"),
                      ("RantTest/OrphanText", "string"), ("RantTest/AlarmCleared", "i32"),
-                     ("RantTest/SwitchA", "i32"), ("RantTest/SwitchB", "i32"), ("RantTest/SwitchText", "string")]:
+                     ("RantTest/SwitchA", "i32"), ("RantTest/SwitchB", "i32"), ("RantTest/SwitchText", "string"),
+                     ("RantTest/FieldXSeen", "f64"), ("RantTest/FieldPosSeen", Double3),
+                     ("RantTest/GaugeLevelSeen", "f64"), ("RantTest/GaugeLabelSeen", "string"),
+                     ("RantTest/MsgAmbText", "string"), ("RantTest/MsgBadText", "string"),
+                     ("RantTest/MsgFnSeen", Double3), ("RantTest/MsgStd", Double3), ("RantTest/Lit", "i32"),
+                     ("RantTest/NoneText", "string")]:
     node.subscriber(name, schema, keep(name), reliable=True, catch_up=1)
 
 # The schema the PLC's Sample block walks to: named by the IEC type, fields as the IEC names, a
@@ -53,6 +62,26 @@ Sample
     phase: Phase,
     span: i32,
     mode: Mode,
+}"""
+
+# What the PLC's Msg calls are sent as: the reader's own type, which the PLC never declares.
+CMD = """Mode = enum<u8> { Off=0, Manual=3, Auto=7 }
+MsgCmd
+{
+    speed: f64,
+    enabled: bool,
+    mode: Mode,
+    label: string,
+    count: u8,
+}"""
+MSG_REQ = "MsgReq { a: i32, b: f64, name: string }"
+
+# The PLC reads level and label by field name, each into a plain value.
+GAUGE = """Gauge
+{
+    id: i32,
+    label: string,
+    level: f64,
 }"""
 
 
@@ -96,6 +125,15 @@ def slow_task(req, ctx):
 
 
 node.task_definition("RantTest/Slow", slow_task, Double3, Double3, Double3)
+# A second node, so MsgTwo and MsgAmb each have two readers of two types.
+node2 = rant.Node("msg_readers_pc", domain=0)
+for name, schema in [("RantTest/MsgCmd", CMD), ("RantTest/MsgBad", CMD), ("RantTest/MsgTwo", "MsgTwoB { x: f64, y: f64 }"),
+                     ("RantTest/MsgAmb", "AmbA { x: f64 }")]:
+    node.subscriber(name, schema, keep(name), reliable=True, catch_up=1)
+node2.subscriber("RantTest/MsgTwo", "MsgTwoA { x: f64 }", keep("RantTest/MsgTwoA"), reliable=True, catch_up=1)
+node2.subscriber("RantTest/MsgAmb", "AmbB { x: f64, y: f64 }", keep("RantTest/MsgAmbB"), reliable=True, catch_up=1)
+node.function_definition("RantTest/MsgFn", lambda r: Double3(x=float(r["a"]), y=r["b"], z=float(len(r["name"]))),
+                         MSG_REQ, Double3)
 pose_in = node.publisher("RantTest/PoseIn", Pose, reliable=True, keep_last=1)
 text_in = node.publisher("RantTest/TextIn", "string", reliable=True, keep_last=1)
 echo = node.remote_function("RantTest/Echo", Double3, Double3)
@@ -107,6 +145,7 @@ run_sleep = node.remote_variable("RantTest/RunSleep", "bool")
 node.subscriber("RantTest/Sample", SAMPLE, keep("RantTest/Sample"), reliable=True, catch_up=1)
 setpoint = node.remote_variable("RantTest/Setpoint", "f64")
 pc_mode = node.variable_definition("RantTest/PcMode", "i32", initial=3)
+gauge = node.variable_definition("RantTest/Gauge", GAUGE, initial={"id": 4, "label": "tank", "level": 1.0})
 count = node.remote_task("RantTest/Count", Double3, Double3, Double3)
 probe = node.remote_variable("Plc/mirrorProbe", "i32")
 log_go = node.remote_variable("RantTest/LogGo", "bool")
@@ -141,12 +180,12 @@ check("VariableDefinition, the PLC's answer to a write", setpoint.get() == 101.0
 
 with lock:
     modes = list(seen.get("RantTest/PcModeSeen", []))
-check("RemoteVariable, the owner's value", 3 in modes, modes)
+check("VariableReader, the owner's value", 3 in modes, modes)
 pc_mode.set(5)
 time.sleep(1.5)
 with lock:
     modes = list(seen.get("RantTest/PcModeSeen", []))
-check("RemoteVariable, a write from the PLC", pc_mode.get() == 6 and modes[-1:] == [6], f"{pc_mode.get()}, seen {modes}")
+check("VariableWriter, a write from the PLC", pc_mode.get() == 6 and modes[-1:] == [6], f"{pc_mode.get()}, seen {modes}")
 
 progress = []
 r = count.call(Double3(x=20.0), on_progress=lambda v: progress.append(v.x if v else None), timeout=10.0)
@@ -207,6 +246,50 @@ with lock:
     check("Mirror, Variables counts the globals", bool(mcount) and mcount[-1] >= 30, mcount[-1:] if mcount else None)
     merr = seen.get("RantTest/MirrorError", [])
     check("Mirror, no error", not merr or merr[-1] == "", merr[-1:] if merr else None)
+    fx = seen.get("RantTest/FieldXSeen", [])
+    check("Subscriber of a field, an LREAL", fx[-1:] == [1.5], fx[-3:])
+    fpos = seen.get("RantTest/FieldPosSeen", [])
+    check("Subscriber of a struct field", bool(fpos) and fpos[-1].y == -2.0 and fpos[-1].z == 3.25,
+          fpos[-1] if fpos else None)
+    levels = list(seen.get("RantTest/GaugeLevelSeen", []))
+    labels = list(seen.get("RantTest/GaugeLabelSeen", []))
+check("VariableReader of a field, its value", 1.0 in levels and labels[-1:] == ["tank"], f"{levels[-3:]} {labels[-3:]}")
+gauge.set({"id": 4, "label": "tank", "level": 5.0})
+time.sleep(1.5)
+g = gauge.get()
+check("VariableWriter of a field sets only its field",
+      g is not None and g["level"] == 6.0 and g["id"] == 4 and g["label"] == "tank", g)
+gauge.set({"id": 4, "label": "pump", "level": 6.0})
+time.sleep(1.5)
+with lock:
+    labels = list(seen.get("RantTest/GaugeLabelSeen", []))
+check("VariableReader of a string field follows the owner", labels[-1:] == ["pump"], labels[-3:])
+gauge.set({"id": 4, "label": "pump", "level": 7.0})
+time.sleep(1.5)
+g = gauge.get()
+check("VariableWriter with Msg writes its two fields in one write",
+      g is not None and g["level"] == 9.5 and g["label"] == "msg" and g["id"] == 4, g)
+
+# Msg: messages the PLC builds by field name, sent as the type their target has.
+with lock:
+    last = (seen.get("RantTest/MsgCmd") or [None])[-1]
+    two = (seen.get("RantTest/MsgTwo") or [None])[-1]
+    amb = list(seen.get("RantTest/MsgAmbText", []))
+    std = (seen.get("RantTest/MsgStd") or [None])[-1]
+    bad = list(seen.get("RantTest/MsgBadText", []))
+    fn = list(seen.get("RantTest/MsgFnSeen", []))
+    lit = list(seen.get("RantTest/Lit", []))
+    none = list(seen.get("RantTest/NoneText", []))
+check("Msg into a Publisher, as the reader's type", last is not None and last["enabled"] is True and last["mode"] == 7
+      and last["label"] == "from Msg" and last["count"] == 0 and 0 <= last["speed"] < 25, last)
+check("Msg names one of a topic's two types", two is not None and two["x"] == 1.5 and two["y"] == 2.5, two)
+check("Msg into a topic of two types without a name sets Error", any("2 types" in t for t in amb), amb[-1:])
+check("Msg names a standard type", std is not None and std.x == 1.0 and std.z == 3.0, std)
+check("Msg with a field name and no value sets Error", any("has no value" in t for t in bad), bad[-1:])
+check("Msg as a RemoteFunction's request", any(r.x == 7.0 and r.z == 3.0 for r in fn), fn[-1:])
+check("A literal into Publisher's Value", lit[-1:] == [77], lit[-1:])
+check("Publisher with neither Value nor Message sets Error", any("Value or Message" in t for t in none), none[-1:])
+
 # Node: a second block naming the node otherwise.
 with lock:
     other = list(seen.get("RantTest/OtherNode", []))
@@ -254,7 +337,7 @@ check("FunctionDefinition, the waiting call is answered next", bool(waiting_resu
       waiting_result[0].value if waiting_result else None)
 with lock:
     orphan = list(seen.get("RantTest/OrphanText", []))
-check("RemoteVariable, a write with no owner sets Error", any("no owner" in t for t in orphan), orphan[-3:])
+check("VariableWriter, a write with no owner sets Error", any("no owner" in t for t in orphan), orphan[-3:])
 
 # A topic is fixed once the node opens: the switched block keeps publishing on its first one.
 with lock:
@@ -319,5 +402,6 @@ rename.set(False)
 # the PLC keeps a write, so the next run starts from its own value again
 setpoint.set(1.5)
 time.sleep(1)
+node2.close()
 node.close()
 sys.exit(0 if ok else 1)

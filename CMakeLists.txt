@@ -32,6 +32,7 @@ add_library(Rant SHARED
   src/RantMath-cli.cpp
   src/blocks/runtime.cpp
   src/blocks/layout.cpp
+  src/blocks/message.cpp
   src/mirror/mirror.cpp
   src/mirror/sampler.cpp
   src/mirror/sync.cpp

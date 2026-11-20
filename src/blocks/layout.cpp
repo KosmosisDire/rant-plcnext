@@ -298,4 +298,82 @@ bool Decode(const Layout& l, const uint8_t* wire, size_t len, uint8_t* plc)
     return Get(r, wire, plc);
 }
 
+namespace d = rant::detail;
+
+void Reader::Reset(const d::RantSchema* own)
+{
+    own_ = own;
+    plans_.clear();
+    leaves_.clear();
+    if (!own) return;
+    // Every value of the own schema by its path. The library's arrays hold only scalars, so an element is never one.
+    std::vector<std::string> names;
+    const uint16_t n = d::rant_schema_field_count(own);
+    for (uint16_t i = 0; i < n; ++i) {
+        d::RantSchemaFieldInfo f;
+        if (!d::rant_schema_field_at(own, i, &f)) continue;
+        names.resize(f.depth);
+        names.emplace_back(f.name.data, f.name.len);
+        if (f.arr_depth > 0 || f.kind == d::RANT_STRUCT) continue;
+        std::string path;
+        for (const std::string& s : names) {
+            if (s.empty()) continue;
+            if (!path.empty()) path += '.';
+            path += s;
+        }
+        leaves_.emplace_back(i, std::move(path));
+    }
+}
+
+const Reader::Plan& Reader::PlanFor(const d::RantSchema* schema)
+{
+    for (const Plan& p : plans_)
+        if (p.schema == schema) return p;
+    Plan p;
+    p.schema = schema;
+    p.ok = true;
+    // A view keeps the reader's hash, so only the places say the bytes are already the own message.
+    p.same = d::rant_schema_size(schema) == d::rant_schema_size(own_)
+          && d::rant_schema_msg_min(schema) == d::rant_schema_msg_min(own_);
+    for (const auto& [row, path] : leaves_) {
+        const int at = d::rant_schema_field_index(schema, path.c_str());
+        d::RantSchemaFieldInfo mine, theirs;
+        if (at < 0 || !d::rant_schema_field_at(schema, static_cast<uint16_t>(at), &theirs)
+            || !d::rant_schema_field_at(own_, row, &mine)) {
+            p.ok = false;
+            break;
+        }
+        p.same = p.same && theirs.kind == mine.kind && theirs.offset == mine.offset && theirs.size == mine.size
+              && theirs.str_cap == mine.str_cap;
+        p.rows.emplace_back(row, static_cast<uint16_t>(at));
+    }
+    plans_.push_back(std::move(p));
+    return plans_.back();
+}
+
+bool Reader::Own(rant::Bytes msg, const d::RantSchema* schema, std::vector<uint8_t>& out)
+{
+    if (!schema || !own_ || schema == own_) {
+        out.assign(msg.data(), msg.data() + msg.size());
+        return true;
+    }
+    const Plan& p = PlanFor(schema);
+    if (!p.ok) return false;
+    if (p.same) {
+        out.assign(msg.data(), msg.data() + msg.size());
+        return true;
+    }
+    // A string of the message fits in its own length past the default.
+    const size_t cap = d::rant_schema_msg_min(own_) + msg.size();
+    out.assign(cap, 0);
+    if (!d::rant_schema_message_default(own_, out.data(), cap)) return false;
+    const d::RantBytes m = d::rant_bytes(msg.data(), msg.size());
+    for (const auto& [row, at] : p.rows) {
+        d::RantValue v;
+        if (!d::rant_get_value(m, schema, at, &v) || !d::rant_set_value(out.data(), cap, own_, row, &v)) return false;
+    }
+    out.resize(d::rant_schema_msg_len(own_, out.data(), cap));
+    return true;
+}
+
 } // namespace blocks

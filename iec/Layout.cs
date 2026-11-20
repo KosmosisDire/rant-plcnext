@@ -8,10 +8,11 @@ namespace Rant
     // once per type, since only managed code may read the type metadata.
     public class Layout
     {
+        // False when the pin is not connected, which an input pin may be.
         public static unsafe bool Describe(int handle, int which, Any value)
         {
             UIntPtr type = value.pRuntimeTypeHandle;
-            if (handle == 0) return false;
+            if (handle == 0 || value.pValue == null || type == UIntPtr.Zero) return false;
             if (!Runtime.NeedsLayout(handle, which, type)) return true;
             Walk(handle, which, -1, null, type, 0);
             Runtime.LayoutDone(handle, which, type, (UIntPtr)value.pValue);
@@ -97,7 +98,7 @@ namespace Rant
             return name[i] == 0;
         }
 
-        static unsafe bool IsAnchor(byte* name)
+        internal static unsafe bool IsAnchor(byte* name)
         {
             return name[0] == 'A' && name[1] == 'n' && name[2] == 'c' && name[3] == 'h' && name[4] == 'o' &&
                 name[5] == 'r' && name[6] == 0;

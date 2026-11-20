@@ -17,7 +17,7 @@ namespace Rant
         public IecString80 Name;
         [InOut, DataType("ANY")]
         public Any Request;
-        [InOut, DataType("ANY")]
+        [Input, DataType("ANY")]
         public Any Response;
         [Input]
         public bool Hold;

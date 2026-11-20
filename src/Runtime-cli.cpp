@@ -2,6 +2,7 @@
 #include "eclr.h"
 #include "Rant.h"
 
+#include "blocks/message.h"
 #include "blocks/runtime.h"
 #include "mirror/mirror.h"
 
@@ -76,9 +77,9 @@ void __PInvoke__ Rant::Runtime::LayoutDone(Int32 p0, Int32 p1, UIntPtr p2, UIntP
     blocks::LayoutDone(p0, p1, p2, Bytes(p3));
 }
 
-Int32 __PInvoke__ Rant::Runtime::Publish(Int32 p0, UIntPtr p1, Int32 p2, Boolean p3)
+Int32 __PInvoke__ Rant::Runtime::Publish(Int32 p0, UIntPtr p1, Int32 p2, Boolean p3, Int32 p4)
 {
-    return blocks::Publish(p0, Bytes(p1), p2, p3);
+    return blocks::Publish(p0, Bytes(p1), p2, p3, static_cast<uint32_t>(p4));
 }
 
 Int32 __PInvoke__ Rant::Runtime::Take(Int32 p0, UIntPtr p1, Int32 p2)
@@ -103,9 +104,9 @@ void __PInvoke__ Rant::Runtime::Reject(Int32 p0, pcoslib::IecString80* p1)
 }
 
 Int32 __PInvoke__ Rant::Runtime::Call(Int32 p0, Boolean p1, Boolean p2, UIntPtr p3, Int32 p4, UIntPtr p5, Int32 p6,
-                                      UIntPtr p7, Int32 p8)
+                                      UIntPtr p7, Int32 p8, Int32 p9)
 {
-    return blocks::Call(p0, p1, p2, Bytes(p3), p4, Bytes(p5), p6, Bytes(p7), p8);
+    return blocks::Call(p0, p1, p2, Bytes(p3), p4, Bytes(p5), p6, Bytes(p7), p8, static_cast<uint32_t>(p9));
 }
 
 Int32 __PInvoke__ Rant::Runtime::Log(Int32 p0, pcoslib::IecString80* p1, pcoslib::IecString80* p2)
@@ -128,6 +129,13 @@ Boolean __PInvoke__ Rant::Runtime::Failed(Int32 p0, pcoslib::IecString80* p1)
     const size_t length = blocks::Failure(p0, why, TEXT_MAX);
     if (length == blocks::FAILURE_UNCHANGED) return p1 && p1->GetLength() != 0;
     return Report(why, length, p1);
+}
+
+Int32 __PInvoke__ Rant::Runtime::MsgStep(UIntPtr p0, Int32 p1, Int32 p2, UIntPtr p3, Int32 p4, Int32 p5)
+{
+    const blocks::msg::Item a{ Bytes(p0), static_cast<uint32_t>(p1), static_cast<uint32_t>(p2) };
+    const blocks::msg::Item b{ Bytes(p3), static_cast<uint32_t>(p4), static_cast<uint32_t>(p5) };
+    return static_cast<Int32>(blocks::msg::Step(a, b));
 }
 
 Int32 __PInvoke__ Rant::Runtime::Mirror(pcoslib::IecString80* p0, Boolean p1, Boolean p2, Int32 p3)

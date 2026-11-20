@@ -8,8 +8,8 @@ using Iec61131.Engineering.Prototypes.Variables;
 
 namespace Rant
 {
-    // Calls the function Name with Request on a rising Execute. Done or Error holds the outcome,
-    // with Response written, until Execute falls.
+    // Calls the function Name with Request, or the message Msg built into Message, on a rising
+    // Execute. Done or Error holds the outcome, with Response written, until Execute falls.
     [FunctionBlock]
     public class RemoteFunction
     {
@@ -17,8 +17,10 @@ namespace Rant
         public IecString80 Name;
         [Input]
         public bool Execute;
-        [InOut, DataType("ANY")]
+        [Input, DataType("ANY")]
         public Any Request;
+        [Input, DataType("UDINT")]
+        public uint Message;
         [InOut, DataType("ANY")]
         public Any Response;
         [Output]
@@ -44,9 +46,11 @@ namespace Rant
         {
             handle = Runtime.Entity(Kind.RemoteFunction, handle, ref Name);
             int state = 0;
-            if (Layout.Describe(handle, 0, Request) && Layout.Describe(handle, 1, Response))
-                state = Runtime.Call(handle, Execute, false, (UIntPtr)Request.pValue, (int)Request.nLength,
-                    UIntPtr.Zero, 0, (UIntPtr)Response.pValue, (int)Response.nLength);
+            bool request = Message == 0 && Layout.Describe(handle, 0, Request);
+            if (Layout.Describe(handle, 1, Response))
+                state = Runtime.Call(handle, Execute, false, request ? (UIntPtr)Request.pValue : UIntPtr.Zero,
+                    request ? (int)Request.nLength : 0, UIntPtr.Zero, 0, (UIntPtr)Response.pValue, (int)Response.nLength,
+                    (int)Message);
             Busy = state == 1;
             Done = state == 2;
             Error = Runtime.Failed(handle, ref ErrorText) || state == 3;

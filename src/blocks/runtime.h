@@ -15,7 +15,8 @@ namespace blocks {
 // The same values as Kind in iec/Runtime.cs.
 enum class Kind : int {
     Publisher = 1, Subscriber = 2, FunctionDefinition = 3, RemoteFunction = 4,
-    VariableDefinition = 5, RemoteVariable = 6, TaskDefinition = 7, RemoteTask = 8, Status = 9
+    VariableDefinition = 5, VariableReader = 6, TaskDefinition = 7, RemoteTask = 8, Status = 9,
+    VariableWriter = 10
 };
 
 // The node's name and domain, reopening it when either changes. Returns 0, or -1 when another Node
@@ -35,13 +36,15 @@ void Bound(int handle, int which, int node, const char* name, int value);
 void Option(int handle, int which, int node, const char* name, int value);
 void LayoutDone(int handle, int which, uintptr_t type, const uint8_t* sample);
 
-// Publisher: queues the value when it changed or send is set. Returns the values sent.
-int Publish(int handle, uint8_t* data, int length, bool send);
-// Subscriber: copies a value that arrived since the last call. Returns the values received
-// times two, plus one when this call copied one.
+// Publisher and VariableWriter: queues the value when it changed or send is set, the message of
+// Msg's handle in place of it when message is not 0. A writer's first value is no change. Returns
+// the values sent.
+int Publish(int handle, uint8_t* data, int length, bool send, uint32_t message);
+// Subscriber and VariableReader: copies a value that arrived since the last call. Returns the
+// values received times two, plus one when this call copied one.
 int Take(int handle, uint8_t* data, int length);
-// VariableDefinition and RemoteVariable: sends the value when the program changed it, else
-// copies one from the mesh. Returns the values received times two, plus one when it copied one.
+// VariableDefinition: sends the value when the program changed it, else copies a write from the
+// mesh. Returns the values received times two, plus one when it copied one.
 int Share(int handle, uint8_t* data, int length);
 // FunctionDefinition and TaskDefinition: answers the call in hand when complete is set, sends
 // progress when it changed, else takes the next request. Returns SERVE_* bits plus calls ended times 8.
@@ -50,9 +53,10 @@ int Serve(int handle, uint8_t* request, int requestLength, uint8_t* progress, in
 // TaskDefinition: fails the call in hand with reason.
 void Reject(int handle, const char* reason, size_t length);
 // RemoteFunction and RemoteTask: 0 idle, 1 busy with progress written as it comes, 2 done with
-// response written, 3 failed. cancel asks the provider of a running task to stop.
+// response written, 3 failed. cancel asks the provider of a running task to stop. A message not 0
+// is the request in place of request.
 int Call(int handle, bool execute, bool cancel, uint8_t* request, int requestLength, uint8_t* progress,
-         int progressLength, uint8_t* response, int responseLength);
+         int progressLength, uint8_t* response, int responseLength, uint32_t message);
 
 // Log: queues text as a log line of the node at level (Rant's, 1 debug to 4 error). Returns 1 when
 // queued, 0 while the queue is busy, -1 when the queue is full and the line was dropped.

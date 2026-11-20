@@ -1,6 +1,6 @@
 ---
 name: plcnext
-description: Writing PLCnext Engineer programs in Structured Text with the library Rant: function blocks that publish, subscribe, offer and call functions and tasks, share variables, log and raise status on the Rant mesh, Rant's standard types as IEC types, and Rant Math's IEC functions. Use when a PLC program should talk to Rant nodes or use Rant's types or math.
+description: Writing PLCnext Engineer programs in Structured Text with the library Rant: function blocks that publish, subscribe, offer and call functions and tasks, share variables, log and raise status on the Rant mesh, messages built by field name with Msg, Rant's standard types as IEC types, and Rant Math's IEC functions. Use when a PLC program should talk to Rant nodes or use Rant's types or math.
 ---
 
 # Rant PLCnext
@@ -21,26 +21,34 @@ https://github.com/KosmosisDire/rant-plcnext/tree/main/docs (`blocks.md` first).
   `node(Name := 'plc_cell');`. A second Node block naming it otherwise sets `Error`.
 - A block's `Name` or `Topic` is fixed once the node opens. Use one block per topic, never one
   block switched between topics.
-- Value pins (`Value`, `Request`, `Response`, `Progress`) take a variable, never a literal.
+- A value pin the block writes into is in out and takes a variable: the `Value` of a Subscriber,
+  VariableDefinition and VariableReader, a definition's `Request`, a remote call's `Progress` and
+  `Response`. A pin the block only reads is an input and takes a literal too: the `Value` of a
+  Publisher and VariableWriter, a remote call's `Request`, a definition's `Progress` and `Response`.
 - Every block has `Error : BOOL` and `ErrorText : STRING`. They clear when the cause does.
 - Names: nodes snake_case (`plc_cell`), topics and other names PascalCase segments
   (`Cell/CupFull`), at most 64 bytes.
 - A remote call or write made while the node is down sets `Error` and is never sent late.
-- A RemoteVariable takes the owner's value first: write it only once `Received` was set.
+- Another node's variable takes two blocks: a VariableReader to read it, a VariableWriter to
+  write it. A writer's first value is not written, so it never overwrites the owner at start.
+- A Subscriber's `Topic`, or a VariableReader's or VariableWriter's `Name`, may end in a field
+  path, so `Value` is just that field: `'Gp12/RobotState.servo_power'` into a BOOL. A writer then
+  writes only that field. No other block takes a path.
 
 ## Blocks
 
 | block | does | inputs | outputs |
 |---|---|---|---|
 | `Node` | names the node | `Name`, `Domain : INT` | |
-| `Publisher` | sends `Value` when it changes, or every cycle `Send` is set | `Topic`, `Value`, `Send` | `Count` |
+| `Publisher` | sends `Value` or `Message` when it changes, or every cycle `Send` is set | `Topic`, `Value`, `Message`, `Send` | `Count` |
 | `Subscriber` | writes the newest value into `Value` | `Topic`, `Value` | `Received`, `Count` |
 | `FunctionDefinition` | offers a function, answers on the next call or while `Hold` stays set | `Name`, `Request`, `Response`, `Hold` | `Called`, `Count` |
-| `RemoteFunction` | calls on a rising `Execute` | `Name`, `Execute`, `Request`, `Response` | `Busy`, `Done` |
+| `RemoteFunction` | calls on a rising `Execute` | `Name`, `Execute`, `Request` or `Message`, `Response` | `Busy`, `Done` |
 | `VariableDefinition` | owns a variable: program changes go out, mesh writes land | `Name`, `Value` | `Received`, `Count` |
-| `RemoteVariable` | another node's variable | `Name`, `Value` | `Received`, `Count` |
+| `VariableReader` | writes another node's variable into `Value` | `Name`, `Value` | `Received`, `Count` |
+| `VariableWriter` | writes `Value` or `Message` to another node's variable when it changes, or every cycle `Send` is set | `Name`, `Value`, `Message`, `Send` | `Count` |
 | `TaskDefinition` | offers a task, one call at a time | `Name`, `Request`, `Progress`, `Response`, `Complete`, `Fail`, `Reason` | `Started`, `Running`, `Cancelled`, `Count` |
-| `RemoteTask` | runs a task on a rising `Execute` | `Name`, `Execute`, `Cancel`, `Request`, `Progress`, `Response` | `Busy`, `Done` |
+| `RemoteTask` | runs a task on a rising `Execute` | `Name`, `Execute`, `Cancel`, `Request` or `Message`, `Progress`, `Response` | `Busy`, `Done` |
 | `LogLine` | one log line on a rising `Execute` | `Execute`, `Level`, `Text` | `Count` |
 | `Status` | raises the condition `Key` while `Active` | `Key`, `Active`, `Level`, `Text`, `Clearable` | `Cleared` |
 | `Mirror` | publishes every PLC variable under `Prefix` | `Prefix`, `Locals`, `Forcing`, `StringCap` | `Variables` |
@@ -85,6 +93,25 @@ END_IF;
 move(Name := 'Cell/Move', Request := goal_pose, Progress := at, Response := at,
      Complete := in_place OR move.Cancelled);
 ```
+
+## Messages without declared types
+
+`Msg` builds a message from field names and values, so a program sends a type it never
+declares. Wire its result into `Message` in the same cycle.
+
+```
+cmd(Topic := 'Conveyor/Cmd', Message := Msg('', 'speed', speed, 'enabled', run, 'mode', 'Auto'));
+call(Name := 'Gp12/SetServo', Execute := go, Message := Msg('', 'on', TRUE), Response := rsp);
+```
+
+- The first input is the type name, `''` for the target's own: the owner's type of a function,
+  task or variable, or the one type a topic's readers have. A VariableWriter writes only the
+  fields the message names. A topic with several types needs the name. A
+  standard type such as `'Pose'` works by name anywhere.
+- Then a field name and its value, in turn. A path reaches inside: `'position.x'`, `'pts[1]'`.
+  Fields left out keep their defaults.
+- A number goes into a wider field, an integer only into one it fits, never a REAL into an
+  integer. An enum field takes its option's name or number.
 
 ## Types
 

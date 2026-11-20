@@ -4,8 +4,11 @@
 
 #include "plc/model.h"
 
+#include "rant.hpp"
+
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace blocks {
@@ -57,5 +60,29 @@ void Finish(Layout& l, const uint8_t* sample);
 void Encode(const Layout& l, const uint8_t* plc, std::vector<uint8_t>& wire);
 // A Rant message into the PLC's bytes. False when the message does not fit the layout.
 bool Decode(const Layout& l, const uint8_t* wire, size_t len, uint8_t* plc);
+
+// Turns a message as Rant delivers it into one of the handle's own schema. A field name or a
+// writer of a wider type delivers the whole sample with a schema that places each part in it.
+class Reader {
+public:
+    // Forgets what it matched, for a handle of the schema own.
+    void Reset(const rant::detail::RantSchema* own);
+    // msg read by schema into out. False when a part of the own schema is not in it.
+    bool Own(rant::Bytes msg, const rant::detail::RantSchema* schema, std::vector<uint8_t>& out);
+
+private:
+    // Where each part of the own schema is in messages of one delivered schema.
+    struct Plan {
+        const rant::detail::RantSchema*        schema = nullptr;
+        bool                                   ok = false;
+        bool                                   same = false;   // laid out as the own schema
+        std::vector<std::pair<uint16_t, uint16_t>> rows;        // own row, delivered row
+    };
+    const Plan& PlanFor(const rant::detail::RantSchema* schema);
+
+    const rant::detail::RantSchema*            own_ = nullptr;
+    std::vector<std::pair<uint16_t, std::string>> leaves_;      // own row and its path
+    std::vector<Plan>                          plans_;
+};
 
 } // namespace blocks

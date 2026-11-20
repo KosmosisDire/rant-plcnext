@@ -8,17 +8,20 @@ using Iec61131.Engineering.Prototypes.Variables;
 
 namespace Rant
 {
-    // The variable Name another node owns. Its value lands in Value, with Received set for that
-    // cycle, and a change the program makes to Value is written to the owner.
+    // Writes Value, or the fields of the message Msg built into Message, to the variable Name,
+    // which another node owns, whenever it changes and every cycle Send is set. The first value
+    // is where the program starts and is not written.
     [FunctionBlock]
-    public class RemoteVariable
+    public class VariableWriter
     {
         [Input, DataType("STRING")]
         public IecString80 Name;
-        [InOut, DataType("ANY")]
+        [Input, DataType("ANY")]
         public Any Value;
-        [Output]
-        public bool Received;
+        [Input, DataType("UDINT")]
+        public uint Message;
+        [Input]
+        public bool Send;
         [Output, DataType("DINT")]
         public int Count;
         [Output]
@@ -38,14 +41,11 @@ namespace Rant
         [Execution]
         public unsafe void __Process()
         {
-            handle = Runtime.Entity(Kind.RemoteVariable, handle, ref Name);
-            Received = false;
-            if (Layout.Describe(handle, 0, Value))
-            {
-                int shared = Runtime.Share(handle, (UIntPtr)Value.pValue, (int)Value.nLength);
-                Received = (shared & 1) != 0;
-                Count = shared >> 1;
-            }
+            handle = Runtime.Entity(Kind.VariableWriter, handle, ref Name);
+            bool value = Message == 0 && Layout.Describe(handle, 0, Value);
+            if (handle != 0)
+                Count = Runtime.Publish(handle, value ? (UIntPtr)Value.pValue : UIntPtr.Zero, value ? (int)Value.nLength : 0,
+                    Send, (int)Message);
             Error = Runtime.Failed(handle, ref ErrorText);
         }
     }

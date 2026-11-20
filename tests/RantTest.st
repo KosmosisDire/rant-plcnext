@@ -27,7 +27,10 @@ VAR
     setpoint : LREAL := LREAL#1.5;
     setpoint_def : VariableDefinition;
     pc_mode : DINT;
-    pc_mode_ref : RemoteVariable;
+    pc_mode_rd : VariableReader;
+    pc_answer : DINT;
+    pc_answer_now : BOOL;
+    pc_mode_wr : VariableWriter;
     seen_mode : Publisher;
     count_request : Double3;
     count_progress : Double3;
@@ -56,7 +59,7 @@ VAR
     other_text : STRING;
     seen_other : Publisher;
     orphan_value : DINT;
-    orphan : RemoteVariable;
+    orphan : VariableWriter;
     orphan_text : STRING;
     seen_orphan : Publisher;
     switch_topic : STRING;
@@ -108,6 +111,40 @@ VAR
     mirror_error : STRING;
     seen_mirror_count : Publisher;
     seen_mirror_error : Publisher;
+    field_x : LREAL;
+    field_x_sub : Subscriber;
+    seen_field_x : Publisher;
+    field_pos : Double3;
+    field_pos_sub : Subscriber;
+    seen_field_pos : Publisher;
+    gauge_level : LREAL;
+    gauge_level_rd : VariableReader;
+    gauge_level_wr : VariableWriter;
+    gauge_answer_now : BOOL;
+    gauge_msg_now : BOOL;
+    gauge_msg_wr : VariableWriter;
+    seen_gauge_level : Publisher;
+    gauge_label : STRING;
+    gauge_label_rd : VariableReader;
+    seen_gauge_label : Publisher;
+    msg_speed : LREAL;
+    msg_pub : Publisher;
+    msg_two : Publisher;
+    msg_amb : Publisher;
+    msg_amb_text : STRING;
+    seen_msg_amb : Publisher;
+    msg_std : Publisher;
+    msg_bad : Publisher;
+    msg_bad_text : STRING;
+    seen_msg_bad : Publisher;
+    msg_go : BOOL;
+    msg_call : RemoteFunction;
+    msg_rsp : Double3;
+    seen_msg_call : Publisher;
+    lit_pub : Publisher;
+    none_pub : Publisher;
+    none_text : STRING;
+    seen_none : Publisher;
 END_VAR
 
 cycles := cycles + DINT#1;
@@ -141,11 +178,13 @@ IF setpoint_def.Received AND setpoint > LREAL#50.0 THEN
     setpoint := setpoint + LREAL#1.0;
 END_IF;
 
-(* The PC owns PcMode. When it sets 5 the PLC answers with 6. *)
-pc_mode_ref(Name := STRING#'RantTest/PcMode', Value := pc_mode);
-IF pc_mode_ref.Received AND pc_mode = DINT#5 THEN
-    pc_mode := DINT#6;
+(* The PC owns PcMode. When it sets 5 the PLC writes 6, Send writing it even when unchanged. *)
+pc_mode_rd(Name := STRING#'RantTest/PcMode', Value := pc_mode);
+pc_answer_now := pc_mode_rd.Received AND pc_mode = DINT#5;
+IF pc_answer_now THEN
+    pc_answer := DINT#6;
 END_IF;
+pc_mode_wr(Name := STRING#'RantTest/PcMode', Value := pc_answer, Send := pc_answer_now);
 seen_mode(Topic := STRING#'RantTest/PcModeSeen', Value := pc_mode);
 
 (* Counts progress up to the request's x, one a cycle, and fails a negative target. *)
@@ -267,6 +306,46 @@ IF sample_fn.Called THEN
     sample_rsp := sample_req;
     sample_rsp.id := sample_req.id + DINT#1;
 END_IF;
+
+(* Field names: one part of the PC's whole sample, read into a plain value. *)
+field_x_sub(Topic := STRING#'RantTest/PoseIn.position.x', Value := field_x);
+seen_field_x(Topic := STRING#'RantTest/FieldXSeen', Value := field_x);
+field_pos_sub(Topic := STRING#'RantTest/PoseIn.position', Value := field_pos);
+seen_field_pos(Topic := STRING#'RantTest/FieldPosSeen', Value := field_pos);
+
+(* The PC owns Gauge. When it sets level 5 the PLC writes 6 to that field alone. *)
+gauge_level_rd(Name := STRING#'RantTest/Gauge.level', Value := gauge_level);
+gauge_answer_now := gauge_level_rd.Received AND gauge_level = LREAL#5.0;
+gauge_level_wr(Name := STRING#'RantTest/Gauge.level', Value := LREAL#6.0, Send := gauge_answer_now);
+(* Level 7 makes the PLC write two fields at once with Msg, leaving id alone. *)
+gauge_msg_now := gauge_level_rd.Received AND gauge_level = LREAL#7.0;
+gauge_msg_wr(Name := 'RantTest/Gauge', Message := Msg('', 'level', LREAL#9.5, 'label', 'msg'), Send := gauge_msg_now);
+seen_gauge_level(Topic := STRING#'RantTest/GaugeLevelSeen', Value := gauge_level);
+gauge_label_rd(Name := STRING#'RantTest/Gauge.label', Value := gauge_label);
+seen_gauge_label(Topic := STRING#'RantTest/GaugeLabelSeen', Value := gauge_label);
+
+(* Msg: messages built field by field, sent as the type their target has. *)
+msg_speed := DINT_TO_LREAL(cycles MOD DINT#100) / LREAL#4.0;
+msg_pub(Topic := STRING#'RantTest/MsgCmd', Message := Msg(STRING#'', STRING#'speed', msg_speed, STRING#'enabled', TRUE,
+    STRING#'mode', STRING#'Auto', STRING#'label', STRING#'from Msg'));
+(* Two nodes read MsgTwo with two types, so the message names one. Without a name it is an Error. *)
+msg_two(Topic := 'RantTest/MsgTwo', Message := Msg('MsgTwoB', 'x', LREAL#1.5, 'y', LREAL#2.5));
+msg_amb(Topic := STRING#'RantTest/MsgAmb', Message := Msg(STRING#'', STRING#'x', LREAL#1.5));
+msg_amb_text := msg_amb.ErrorText;
+seen_msg_amb(Topic := STRING#'RantTest/MsgAmbText', Value := msg_amb_text);
+msg_std(Topic := STRING#'RantTest/MsgStd', Message := Msg(STRING#'Double3', STRING#'x', DINT#1, STRING#'z', REAL#3.0));
+msg_bad(Topic := STRING#'RantTest/MsgBad', Message := Msg(STRING#'', STRING#'speed'));
+msg_bad_text := msg_bad.ErrorText;
+seen_msg_bad(Topic := STRING#'RantTest/MsgBadText', Value := msg_bad_text);
+msg_go := (cycles MOD DINT#40) < DINT#20;
+msg_call(Name := STRING#'RantTest/MsgFn', Execute := msg_go,
+    Message := Msg(STRING#'', STRING#'a', DINT#7, STRING#'b', msg_speed, STRING#'name', STRING#'abc'), Response := msg_rsp);
+seen_msg_call(Topic := STRING#'RantTest/MsgFnSeen', Value := msg_rsp);
+(* Value is an input, so it takes a literal, and a block given neither pin says so. *)
+lit_pub(Topic := STRING#'RantTest/Lit', Value := DINT#77);
+none_pub(Topic := STRING#'RantTest/None');
+none_text := none_pub.ErrorText;
+seen_none(Topic := STRING#'RantTest/NoneText', Value := none_text);
 
 (* Every global under the default prefix Plc. The PC writes mirrorProbe and reads mirrorEcho. *)
 mirror();

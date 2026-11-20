@@ -12,10 +12,11 @@ namespace Rant
         public const int FunctionDefinition = 3;
         public const int RemoteFunction = 4;
         public const int VariableDefinition = 5;
-        public const int RemoteVariable = 6;
+        public const int VariableReader = 6;
         public const int TaskDefinition = 7;
         public const int RemoteTask = 8;
         public const int Status = 9;
+        public const int VariableWriter = 10;
 
         // What Runtime.Serve reports beside the calls ended times eight.
         public const int ServeNew = 1;
@@ -75,21 +76,23 @@ namespace Rant
         {
         }
 
-        // Publisher: queues the value when it changed or send is set. Returns the values sent.
-        public static int Publish(int handle, UIntPtr data, int length, bool send)
+        // Publisher and VariableWriter: queues the value when it changed or send is set, the message of
+        // Msg's handle in place of it when message is not 0. A writer's first value is no change.
+        // Returns the values sent.
+        public static int Publish(int handle, UIntPtr data, int length, bool send, int message)
         {
             return 0;
         }
 
-        // Subscriber: copies a value that arrived since the last call. Returns the values received
-        // times two, plus one when this call copied one.
+        // Subscriber and VariableReader: copies a value that arrived since the last call. Returns the
+        // values received times two, plus one when this call copied one.
         public static int Take(int handle, UIntPtr data, int length)
         {
             return 0;
         }
 
-        // VariableDefinition and RemoteVariable: sends the value when the program changed it, else
-        // copies one from the mesh. Returns the values received times two, plus one when it copied one.
+        // VariableDefinition: sends the value when the program changed it, else copies a write from
+        // the mesh. Returns the values received times two, plus one when it copied one.
         public static int Share(int handle, UIntPtr data, int length)
         {
             return 0;
@@ -109,9 +112,10 @@ namespace Rant
         }
 
         // RemoteFunction and RemoteTask: starts a call on execute, then reports 1 busy, 2 done with
-        // response written, 3 failed, 0 idle. cancel asks the provider of a running task to stop.
+        // response written, 3 failed, 0 idle. cancel asks the provider of a running task to stop. A
+        // message not 0 is the request in place of request.
         public static int Call(int handle, bool execute, bool cancel, UIntPtr request, int requestLength,
-            UIntPtr progress, int progressLength, UIntPtr response, int responseLength)
+            UIntPtr progress, int progressLength, UIntPtr response, int responseLength, int message)
         {
             return 0;
         }
@@ -133,6 +137,13 @@ namespace Rant
         public static bool Failed(int handle, ref IecString80 text)
         {
             return false;
+        }
+
+        // One step of Msg: the type name and the first field name, or a message's handle and its next
+        // input. Returns the message's handle, 0 when no buffer is left.
+        public static int MsgStep(UIntPtr a, int aLength, int aType, UIntPtr b, int bLength, int bType)
+        {
+            return 0;
         }
 
         // Starts the mirror, and starts it over when a setting changed. Returns the variables it

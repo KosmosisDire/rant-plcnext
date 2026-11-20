@@ -17,8 +17,9 @@ BLOCKS = {
     "Node": "Node", "LogLine": "Node", "Status": "Node",
     "Publisher": "Topics", "Subscriber": "Topics",
     "FunctionDefinition": "Functions", "RemoteFunction": "Functions",
-    "VariableDefinition": "Variables", "RemoteVariable": "Variables",
+    "VariableDefinition": "Variables", "VariableReader": "Variables", "VariableWriter": "Variables",
     "TaskDefinition": "Tasks", "RemoteTask": "Tasks",
+    "Msg": "Messages",
     "Mirror": "Mirror",
 }
 
@@ -28,7 +29,7 @@ def blocks():
     found = []
     for path in sorted(glob.glob(os.path.join(IEC, "*.cs"))):
         text = open(path, encoding="utf-8").read()
-        found += re.findall(r"\[(?:FunctionBlock|Function)\]\s*public (?:static )?class (\w+)", text)
+        found += re.findall(r"\[(?:FunctionBlock|Function)(?:, \w+)*\]\s*public (?:static )?class (\w+)", text)
     return found
 
 

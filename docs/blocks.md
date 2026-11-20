@@ -9,7 +9,8 @@ Every block shares one node per PLC, and a block call never waits on the network
   keeps its first. To send to two topics, use two blocks.
 - `Error` and `ErrorText` clear when the cause does. A call that fails sets them until the next
   call.
-- Value pins (`Value`, `Request`, `Response`) take a variable, not a literal.
+- A value pin the block writes into is in out and takes a variable. One it only reads is an
+  input and takes a literal too.
 - A name is at most 64 bytes.
 - When the node opens again, a call in hand ends with the text `the node reopened`.
 - A call or a variable write made while the node is down sets `Error` and is never sent late. One
@@ -25,15 +26,17 @@ The first Node block to run names it. Another one naming it otherwise sets `Erro
 
 ## Publisher
 
-Publishes `Value` on `Topic` whenever it changes, and every cycle `Send` is set. A subscriber
-that joins later gets the last value, also of a value that never changes.
+Publishes `Value`, or the message `Msg` built into `Message`, on `Topic` whenever it changes,
+and every cycle `Send` is set. A subscriber that joins later gets the last value, also of a value
+that never changes.
 
-- `Topic : STRING`, `Value : ANY` (in out), `Send : BOOL`
+- `Topic : STRING`, `Value : ANY`, `Message : UDINT`, `Send : BOOL`
 - `Count : DINT` sent, `Error : BOOL`, `ErrorText : STRING`
 
 ## Subscriber
 
-Writes the newest value of `Topic` into `Value`.
+Writes the newest value of `Topic` into `Value`. A field path after the topic writes just that
+field, so `Value` is its type: `'Gp12/RobotState.servo_power'` into a BOOL.
 
 - `Topic : STRING`, `Value : ANY` (in out)
 - `Received : BOOL` for the cycle a value arrives, `Count : DINT`, `Error`, `ErrorText`
@@ -44,7 +47,7 @@ Offers the function `Name`. `Called` is set for the cycle a call's `Request` arr
 call of the block answers with `Response`, or a later one while `Hold` is set. One more call
 waits beside the one in hand, and a caller past that is told the function is busy.
 
-- `Name : STRING`, `Request : ANY`, `Response : ANY` (both in out), `Hold : BOOL`
+- `Name : STRING`, `Request : ANY` (in out), `Response : ANY`, `Hold : BOOL`
 - `Called : BOOL`, `Count : DINT` answered, `Error`, `ErrorText`
 
 ```
@@ -54,10 +57,10 @@ pulse(IN := chirp.Called, PT := T#300ms);
 
 ## RemoteFunction
 
-Calls the function `Name` with `Request` on a rising `Execute`. `Done` or `Error` holds the
-outcome, with `Response` written, until `Execute` falls.
+Calls the function `Name` with `Request`, or the message `Msg` built into `Message`, on a rising
+`Execute`. `Done` or `Error` holds the outcome, with `Response` written, until `Execute` falls.
 
-- `Name : STRING`, `Execute : BOOL`, `Request : ANY`, `Response : ANY` (both in out)
+- `Name : STRING`, `Execute : BOOL`, `Request : ANY`, `Message : UDINT`, `Response : ANY` (in out)
 - `Busy`, `Done`, `Error : BOOL`, `ErrorText : STRING`
 
 ## VariableDefinition
@@ -68,14 +71,31 @@ from the mesh lands in `Value`.
 - `Name : STRING`, `Value : ANY` (in out)
 - `Received : BOOL` for the cycle a write lands, `Count : DINT`, `Error`, `ErrorText`
 
-## RemoteVariable
+## VariableReader
 
-The variable `Name` another node owns. Its value lands in `Value`, and a change the program
-makes to `Value` is written to the owner. A write while no owner is found sets `Error` and is not
-sent later, so write once `Received` was set.
+Writes the value of the variable `Name`, which another node owns, into `Value`. A field path
+after the name reads just that field: `'Cell/Tank.level'` into an LREAL.
 
 - `Name : STRING`, `Value : ANY` (in out)
-- `Received : BOOL` for the cycle a value lands, `Count : DINT`, `Error`, `ErrorText`
+- `Received : BOOL` for the cycle the value changes, `Count : DINT`, `Error`, `ErrorText`
+
+## VariableWriter
+
+Writes `Value`, or the fields of the message `Msg` built into `Message`, to the variable `Name`
+that another node owns, whenever it changes and every cycle `Send` is set. The first value is
+where the program starts, so it is not written. A write while no owner is found sets `Error` and
+is not sent later.
+
+- A field path after the name writes just that field: `'Cell/Tank.level'` from an LREAL.
+- A message writes just the fields it names, in one write, and the owner keeps the rest.
+- To read and write one variable, use a VariableReader and a VariableWriter on its name.
+
+```
+level_set(Name := 'Cell/Tank', Message := Msg('', 'level', target, 'valve', open), Send := apply);
+```
+
+- `Name : STRING`, `Value : ANY`, `Message : UDINT`, `Send : BOOL`
+- `Count : DINT` written, `Error`, `ErrorText`
 
 ## TaskDefinition
 
@@ -84,7 +104,7 @@ arrives and `Running` until a later cycle ends it: `Complete` answers with `Resp
 fails it with `Reason`. `Progress` goes to the caller whenever it changes. `Cancelled` says the
 caller wants it to stop, and `Complete` then answers it as cancelled.
 
-- `Name : STRING`, `Request`, `Progress`, `Response : ANY` (in out)
+- `Name : STRING`, `Request : ANY` (in out), `Progress`, `Response : ANY`
 - `Complete`, `Fail : BOOL`, `Reason : STRING`
 - `Started`, `Running`, `Cancelled : BOOL`, `Count : DINT` ended, `Error`, `ErrorText`
 
@@ -95,11 +115,12 @@ move(Name := 'Cell/Move', Request := target, Progress := at, Response := at,
 
 ## RemoteTask
 
-Runs the task `Name` with `Request` on a rising `Execute`. `Progress` is written as it comes
-while `Busy`, and `Cancel` asks the provider to stop. `Done` or `Error` holds the outcome, with
-`Response` written, until `Execute` falls.
+Runs the task `Name` with `Request`, or the message `Msg` built into `Message`, on a rising
+`Execute`. `Progress` is written as it comes while `Busy`, and `Cancel` asks the provider to stop.
+`Done` or `Error` holds the outcome, with `Response` written, until `Execute` falls.
 
-- `Name : STRING`, `Execute`, `Cancel : BOOL`, `Request`, `Progress`, `Response : ANY` (in out)
+- `Name : STRING`, `Execute`, `Cancel : BOOL`, `Request : ANY`, `Message : UDINT`,
+  `Progress`, `Response : ANY` (in out)
 - `Busy`, `Done`, `Error : BOOL`, `ErrorText : STRING`
 
 ## LogLine
@@ -124,6 +145,24 @@ drive_fault(Key := 'drive2', Active := drive_tripped, Level := Level#Error,
 - `Cleared : BOOL`, `Error`, `ErrorText`
 
 `Level` is `Debug`, `Info`, `Warn` or `Error`.
+
+## Msg
+
+A function that builds a message from field names and values, so a program sends a type it
+never declares. Its result goes into a block's `Message` in the same cycle.
+
+```
+cmd(Topic := 'Conveyor/Cmd', Message := Msg('', 'speed', speed, 'enabled', run, 'mode', 'Auto'));
+```
+
+- The first input names the type, `''` for the target's own: the owner's of a function, task or
+  variable, or the one type the readers of a topic have. A standard type such as `'Pose'` works by name.
+- Then a field name and its value, in turn, as many as needed. A path reaches inside a field:
+  `'position.x'`, `'pts[1]'`. Fields left out keep their defaults.
+- A number goes into a wider field and an integer into any it fits. A REAL never goes into an
+  integer. An enum field takes its option's name or number. An array goes into an array of its
+  element type.
+- A message is at most 1024 bytes, and Message holds it only in the cycle that built it.
 
 ## Mirror
 
