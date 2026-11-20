@@ -81,9 +81,9 @@ namespace Rant
         {
         }
 
-        // Publisher and VariableWriter: queues the value when it changed or send is set. When message
-        // is set, data is a Msg block's message, sent as the type typeName names. A writer's first
-        // value is no change. Returns the values sent.
+        // Publisher and VariableWriter: queues the value when it changed or send is set. When
+        // message is set, data is a StructBuilder's message, sent as the type typeName names. A
+        // writer's first value is no change. Returns the values sent.
         public static int Publish(int handle, UIntPtr data, int length, bool send, bool message, ref IecString80 typeName)
         {
             return 0;
@@ -117,8 +117,9 @@ namespace Rant
         }
 
         // RemoteFunction and RemoteTask: starts a call on execute, then reports 1 busy, 2 done with
-        // response written, 3 failed, 0 idle. cancel asks the provider of a running task to stop. When
-        // message is set, request is a Msg block's message, or zero for none, sent as typeName's type.
+        // response written, 3 failed, 0 idle. cancel asks the provider of a running task to stop.
+        // When message is set, request is a StructBuilder's message, or zero for none, sent as
+        // typeName's type.
         public static int Call(int handle, bool execute, bool cancel, UIntPtr request, int requestLength,
             UIntPtr progress, int progressLength, UIntPtr response, int responseLength, bool message,
             ref IecString80 typeName)
@@ -145,18 +146,35 @@ namespace Rant
             return false;
         }
 
-        // Whether a pin's type, by its namespace and name, is the Message struct the Msg blocks build.
+        // Whether a pin's type, by its namespace and name, is the Message a StructBuilder returns.
         public static bool IsMessage(UIntPtr space, UIntPtr name)
         {
             return false;
         }
 
-        // Empties the message at m, then adds a Msg block's index'th field name and its value to it.
+        // Empties the message at m, then adds a StructBuilder's index'th field name and its value to it.
         public static void MsgBegin(UIntPtr m)
         {
         }
 
         public static void MsgAdd(UIntPtr m, int index, UIntPtr field, int fieldLength, int fieldType,
+            UIntPtr value, int valueLength, int valueType)
+        {
+        }
+
+        // Another builder's message as the value: its fields under the field name, at the top for ''.
+        public static void MsgNest(UIntPtr m, int index, UIntPtr field, int fieldLength, int fieldType,
+            UIntPtr inner, int innerLength)
+        {
+        }
+
+        // A struct variable as the value: MsgPath names its member at depth, and MsgLeaf adds a
+        // member holding a value under the field name and the depth members above it.
+        public static void MsgPath(int depth, UIntPtr member)
+        {
+        }
+
+        public static void MsgLeaf(UIntPtr m, int index, UIntPtr field, int fieldLength, int fieldType, int depth,
             UIntPtr value, int valueLength, int valueType)
         {
         }

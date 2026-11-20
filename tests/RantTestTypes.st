@@ -5,6 +5,10 @@ TYPE
         a : INT;
         b : REAL;
     END_STRUCT;
+    MotorCmd : STRUCT
+        motorSpeed : LREAL;
+        enabled : BOOL;
+    END_STRUCT;
     Sample : STRUCT
         id : DINT;
         label : STRING[15];

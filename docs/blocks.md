@@ -28,7 +28,7 @@ The first Node block to run names it. Another one naming it otherwise sets `Erro
 ## Publisher
 
 Publishes `Value` on `Topic` whenever it changes, and every cycle `Send` is set. A subscriber
-that joins later gets the last value, also of a value that never changes. A [Msg](#msg) block's
+that joins later gets the last value, also of a value that never changes. A [StructBuilder](#structbuilder)'s
 message goes out as the type the readers have, or the one `TypeName` names when they have several.
 
 - `Topic : STRING`, `Value : ANY`, `TypeName : STRING`, `Send : BOOL`
@@ -59,7 +59,7 @@ pulse(IN := chirp.Called, PT := T#300ms);
 ## RemoteFunction
 
 Calls the function `Name` with `Request` on a rising `Execute`. `Done` or `Error` holds the
-outcome, with `Response` written, until `Execute` falls. A [Msg](#msg) block's message goes out as
+outcome, with `Response` written, until `Execute` falls. A [StructBuilder](#structbuilder)'s message goes out as
 the function's own type, and so does no `Request` at all, with every field at its default, as for
 a function of `Empty`.
 
@@ -84,7 +84,7 @@ after the name reads just that field: `'Cell/Tank.level'` into an LREAL.
 
 ## VariableWriter
 
-Writes `Value`, or the fields a [Msg](#msg) block's message names, to the variable `Name`
+Writes `Value`, or the fields a [StructBuilder](#structbuilder)'s message names, to the variable `Name`
 that another node owns, whenever it changes and every cycle `Send` is set. The first value is
 where the program starts, so it is not written. A write while no owner is found sets `Error` and
 is not sent later.
@@ -94,7 +94,7 @@ is not sent later.
 - To read and write one variable, use a VariableReader and a VariableWriter on its name.
 
 ```
-level_set(Name := 'Cell/Tank', Value := Msg2('level', target, 'valve', open), Send := apply);
+level_set(Name := 'Cell/Tank', Value := StructBuilder2('level', target, 'valve', open), Send := apply);
 ```
 
 - `Name : STRING`, `Value : ANY`, `TypeName : STRING`, `Send : BOOL`
@@ -118,7 +118,7 @@ move(Name := 'Cell/Move', Request := target, Progress := at, Response := at,
 
 ## RemoteTask
 
-Runs the task `Name` with `Request` on a rising `Execute`, which takes a [Msg](#msg) block's
+Runs the task `Name` with `Request` on a rising `Execute`, which takes a [StructBuilder](#structbuilder)'s
 message or nothing as RemoteFunction does. `Progress` is written as it comes while `Busy`, and `Cancel` asks the provider to stop.
 `Done` or `Error` holds the outcome, with `Response` written, until `Execute` falls.
 
@@ -149,18 +149,25 @@ drive_fault(Key := 'drive2', Active := drive_tripped, Level := Level#Error,
 
 `Level` is `Debug`, `Info`, `Warn` or `Error`.
 
-## Msg
+## StructBuilder
 
-`Msg1` to `Msg10` build a message from that many field names and values, so a program sends a
-type it never declares. Wire the result into the `Value` or `Request` of a Publisher,
-VariableWriter, RemoteFunction or RemoteTask.
+`StructBuilder1` to `StructBuilder10` build a struct from that many field names and values, so a
+program sends a type it never declares. Wire the result into the `Value` or `Request` of a
+Publisher, VariableWriter, RemoteFunction or RemoteTask.
 
 ```
-cmd(Topic := 'Conveyor/Cmd', Value := Msg3('speed', speed, 'enabled', run, 'mode', 'Auto'));
+cmd(Topic := 'Conveyor/Cmd', Value := StructBuilder3('speed', speed, 'enabled', run, 'mode', 'Auto'));
+at := StructBuilder2('x', x, 'y', y);   (* at : Message *)
+goal(Topic := 'Cell/Goal', Value := StructBuilder2('position', at, 'orientation', heading));
 ```
 
 - Each `Field` is a field name, each `Value` what it gets. A path reaches inside a field:
   `'position.x'`, `'pts[1]'`. Fields left out keep their defaults.
+- A value may be another StructBuilder or a struct variable: its fields go under the field name,
+  a struct's members by their Rant names. An empty field name puts them at the top, which also
+  takes more than ten fields.
+- Engineer passes no function's struct result straight into another function, in ST or FBD, so
+  an inner StructBuilder goes through a variable of type `Message` first.
 - Every pin must be connected, and ST passes them in order without their names.
 - The message goes out as the target's own type: the owner's of a function, task or variable, or
   the one type the readers of a topic have. The block's `TypeName` names another, such as one of

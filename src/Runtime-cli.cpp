@@ -155,6 +155,25 @@ void __PInvoke__ Rant::Runtime::MsgAdd(UIntPtr p0, Int32 p1, UIntPtr p2, Int32 p
     blocks::msg::Add(Bytes(p0), p1, field, value);
 }
 
+void __PInvoke__ Rant::Runtime::MsgNest(UIntPtr p0, Int32 p1, UIntPtr p2, Int32 p3, Int32 p4, UIntPtr p5, Int32 p6)
+{
+    const blocks::msg::Item field{ Bytes(p2), static_cast<uint32_t>(p3), static_cast<uint32_t>(p4) };
+    blocks::msg::Nest(Bytes(p0), p1, field, Bytes(p5), static_cast<size_t>(p6));
+}
+
+void __PInvoke__ Rant::Runtime::MsgPath(Int32 p0, UIntPtr p1)
+{
+    blocks::msg::Path(p0, Chars(p1));
+}
+
+void __PInvoke__ Rant::Runtime::MsgLeaf(UIntPtr p0, Int32 p1, UIntPtr p2, Int32 p3, Int32 p4, Int32 p5, UIntPtr p6,
+                                        Int32 p7, Int32 p8)
+{
+    const blocks::msg::Item field{ Bytes(p2), static_cast<uint32_t>(p3), static_cast<uint32_t>(p4) };
+    const blocks::msg::Item value{ Bytes(p6), static_cast<uint32_t>(p7), static_cast<uint32_t>(p8) };
+    blocks::msg::Leaf(Bytes(p0), p1, field, p5, value);
+}
+
 Int32 __PInvoke__ Rant::Runtime::Mirror(pcoslib::IecString80* p0, Boolean p1, Boolean p2, Int32 p3)
 {
     // The one mirror's settings stay here, and the prefix is built again only when it changed. A

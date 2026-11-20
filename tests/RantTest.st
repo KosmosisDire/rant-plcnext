@@ -153,6 +153,12 @@ VAR
     bare_task : RemoteTask;
     bare_task_done : BOOL;
     seen_bare_task : Publisher;
+    nest_inner : Message;
+    nest_pub : Publisher;
+    struct_pos : Double3;
+    struct_pub : Publisher;
+    motor_cmd : MotorCmd;
+    motor_pub : Publisher;
     lit_pub : Publisher;
     none_pub : Publisher;
     none_text : STRING;
@@ -329,29 +335,29 @@ seen_field_pos(Topic := STRING#'RantTest/FieldPosSeen', Value := field_pos);
 gauge_level_rd(Name := STRING#'RantTest/Gauge.level', Value := gauge_level);
 gauge_answer_now := gauge_level_rd.Received AND gauge_level = LREAL#5.0;
 gauge_level_wr(Name := STRING#'RantTest/Gauge.level', Value := LREAL#6.0, Send := gauge_answer_now);
-(* Level 7 makes the PLC write two fields at once with Msg2, leaving id alone. *)
+(* Level 7 makes the PLC write two fields at once with StructBuilder2, leaving id alone. *)
 gauge_msg_now := gauge_level_rd.Received AND gauge_level = LREAL#7.0;
-gauge_msg_wr(Name := 'RantTest/Gauge', Value := Msg2('level', LREAL#9.5, 'label', 'msg'), Send := gauge_msg_now);
+gauge_msg_wr(Name := 'RantTest/Gauge', Value := StructBuilder2('level', LREAL#9.5, 'label', 'msg'), Send := gauge_msg_now);
 seen_gauge_level(Topic := STRING#'RantTest/GaugeLevelSeen', Value := gauge_level);
 gauge_label_rd(Name := STRING#'RantTest/Gauge.label', Value := gauge_label);
 seen_gauge_label(Topic := STRING#'RantTest/GaugeLabelSeen', Value := gauge_label);
 
-(* Msg1 to Msg10: messages built field by field, sent as the type their target has. *)
+(* StructBuilder1 to StructBuilder10: structs built field by field, sent as the type their target has. *)
 msg_speed := DINT_TO_LREAL(cycles MOD DINT#100) / LREAL#4.0;
-msg_pub(Topic := STRING#'RantTest/MsgCmd', Value := Msg4(STRING#'speed', msg_speed, STRING#'enabled', TRUE,
+msg_pub(Topic := STRING#'RantTest/MsgCmd', Value := StructBuilder4(STRING#'speed', msg_speed, STRING#'enabled', TRUE,
     STRING#'mode', STRING#'Auto', STRING#'label', STRING#'from Msg'));
 (* Two nodes read MsgTwo with two types, so TypeName names one. Without a name it is an Error. *)
-msg_two(Topic := 'RantTest/MsgTwo', Value := Msg2('x', LREAL#1.5, 'y', LREAL#2.5), TypeName := 'MsgTwoB');
-msg_amb(Topic := STRING#'RantTest/MsgAmb', Value := Msg1(STRING#'x', LREAL#1.5));
+msg_two(Topic := 'RantTest/MsgTwo', Value := StructBuilder2('x', LREAL#1.5, 'y', LREAL#2.5), TypeName := 'MsgTwoB');
+msg_amb(Topic := STRING#'RantTest/MsgAmb', Value := StructBuilder1(STRING#'x', LREAL#1.5));
 msg_amb_text := msg_amb.ErrorText;
 seen_msg_amb(Topic := STRING#'RantTest/MsgAmbText', Value := msg_amb_text);
-msg_std(Topic := STRING#'RantTest/MsgStd', Value := Msg2(STRING#'x', DINT#1, STRING#'z', REAL#3.0), TypeName := 'Double3');
-msg_bad(Topic := STRING#'RantTest/MsgBad', Value := Msg1(DINT#1, LREAL#1.0));
+msg_std(Topic := STRING#'RantTest/MsgStd', Value := StructBuilder2(STRING#'x', DINT#1, STRING#'z', REAL#3.0), TypeName := 'Double3');
+msg_bad(Topic := STRING#'RantTest/MsgBad', Value := StructBuilder1(DINT#1, LREAL#1.0));
 msg_bad_text := msg_bad.ErrorText;
 seen_msg_bad(Topic := STRING#'RantTest/MsgBadText', Value := msg_bad_text);
 msg_go := (cycles MOD DINT#40) < DINT#20;
 msg_call(Name := STRING#'RantTest/MsgFn', Execute := msg_go,
-    Request := Msg3(STRING#'a', DINT#7, STRING#'b', msg_speed, STRING#'name', STRING#'abc'), Response := msg_rsp);
+    Request := StructBuilder3(STRING#'a', DINT#7, STRING#'b', msg_speed, STRING#'name', STRING#'abc'), Response := msg_rsp);
 seen_msg_call(Topic := STRING#'RantTest/MsgFnSeen', Value := msg_rsp);
 (* No Request at all sends the function's type at its defaults: Empty, or MsgFn's with every field 0. *)
 empty_call(Name := STRING#'RantTest/EmptyFn', Execute := msg_go, Response := empty_rsp);
@@ -362,9 +368,22 @@ seen_default(Topic := STRING#'RantTest/MsgFnDefault', Value := default_rsp);
 bare_call(Name := STRING#'RantTest/EmptyFn', Execute := msg_go);
 bare_call_done := bare_call.Done;
 seen_bare_call(Topic := STRING#'RantTest/BareCallDone', Value := bare_call_done);
-bare_task(Name := STRING#'RantTest/Quick', Execute := msg_go, Request := Msg1(STRING#'x', LREAL#2.0));
+bare_task(Name := STRING#'RantTest/Quick', Execute := msg_go, Request := StructBuilder1(STRING#'x', LREAL#2.0));
 bare_task_done := bare_task.Done;
 seen_bare_task(Topic := STRING#'RantTest/BareTaskDone', Value := bare_task_done);
+(* A builder as a value nests its fields under the field name. A struct variable gives its members.
+   ST passes no function's struct result straight into another function, so the inner one is a variable. *)
+nest_inner := StructBuilder2(STRING#'x', LREAL#1.5, STRING#'z', LREAL#3.0);
+nest_pub(Topic := STRING#'RantTest/NestPose', Value := StructBuilder2(STRING#'position', nest_inner,
+    STRING#'orientation.w', LREAL#1.0));
+struct_pos.x := LREAL#4.0;
+struct_pos.y := LREAL#5.0;
+struct_pos.z := LREAL#6.0;
+struct_pub(Topic := STRING#'RantTest/StructPose', Value := StructBuilder1(STRING#'position', struct_pos));
+motor_cmd.motorSpeed := LREAL#2.5;
+motor_cmd.enabled := TRUE;
+motor_pub(Topic := STRING#'RantTest/StructDrive', Value := StructBuilder2(STRING#'motor', motor_cmd, STRING#'label',
+    STRING#'drive'));
 (* Value is an input, so it takes a literal, and a block given neither pin says so. *)
 lit_pub(Topic := STRING#'RantTest/Lit', Value := DINT#77);
 none_pub(Topic := STRING#'RantTest/None');

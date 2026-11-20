@@ -8,7 +8,7 @@ using Iec61131.Engineering.Prototypes.Variables;
 
 namespace Rant
 {
-    // Publishes Value on Topic whenever it changes, and every cycle Send is set. A Msg block's
+    // Publishes Value on Topic whenever it changes, and every cycle Send is set. A StructBuilder's
     // message goes out as the readers' type, or the one TypeName names when they have several.
     [FunctionBlock]
     public class Publisher

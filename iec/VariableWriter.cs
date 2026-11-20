@@ -8,9 +8,9 @@ using Iec61131.Engineering.Prototypes.Variables;
 
 namespace Rant
 {
-    // Writes Value, or the fields a Msg block's message names, to the variable Name, which another
-    // node owns, whenever it changes and every cycle Send is set. The first value is where the
-    // program starts and is not written.
+    // Writes Value, or the fields a StructBuilder's message names, to the variable Name, which
+    // another node owns, whenever it changes and every cycle Send is set. The first value is where
+    // the program starts and is not written.
     [FunctionBlock]
     public class VariableWriter
     {

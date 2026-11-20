@@ -8,7 +8,7 @@ namespace Rant
     // once per type, since only managed code may read the type metadata.
     public class Layout
     {
-        // Whether the pin holds a message a Msg block built.
+        // Whether the pin holds a message a StructBuilder built.
         public static unsafe bool IsMessage(Any value)
         {
             UIntPtr type = value.pRuntimeTypeHandle;

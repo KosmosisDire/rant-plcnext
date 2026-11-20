@@ -8,9 +8,9 @@ using Iec61131.Engineering.Prototypes.Variables;
 
 namespace Rant
 {
-    // Calls the function Name with Request on a rising Execute. Done or Error holds the outcome, with
-    // Response written, until Execute falls. A Msg block's message, or no Request at all, goes out
-    // as the function's type with the fields it names, the rest at their defaults.
+    // Calls the function Name with Request on a rising Execute. Done or Error holds the outcome,
+    // with Response written, until Execute falls. A StructBuilder's message, or no Request at all,
+    // goes out as the function's type with the fields it names, the rest at their defaults.
     [FunctionBlock]
     public class RemoteFunction
     {

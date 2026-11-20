@@ -54,6 +54,9 @@ public:
         static Boolean IsMessage(UIntPtr p0, UIntPtr p1);
         static void MsgBegin(UIntPtr p0);
         static void MsgAdd(UIntPtr p0, Int32 p1, UIntPtr p2, Int32 p3, Int32 p4, UIntPtr p5, Int32 p6, Int32 p7);
+        static void MsgNest(UIntPtr p0, Int32 p1, UIntPtr p2, Int32 p3, Int32 p4, UIntPtr p5, Int32 p6);
+        static void MsgPath(Int32 p0, UIntPtr p1);
+        static void MsgLeaf(UIntPtr p0, Int32 p1, UIntPtr p2, Int32 p3, Int32 p4, Int32 p5, UIntPtr p6, Int32 p7, Int32 p8);
         static Int32 Mirror(pcoslib::IecString80* p0, Boolean p1, Boolean p2, Int32 p3);
         static Boolean MirrorFailed(pcoslib::IecString80* p0);
         Runtime();

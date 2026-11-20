@@ -11,7 +11,7 @@ blocks, docs/usage.md how to build and test.
 | `src/Rant-cli.cpp`, `src/Runtime-cli.cpp` | the eCLR hooks and the native side of `iec/Runtime.cs` |
 | `src/blocks/runtime.*` | the shared node, its thread, and an entity per block |
 | `src/blocks/layout.*` | a block's value between IEC memory and the wire |
-| `src/blocks/message.*` | the Msg blocks' messages: their layout, and filling a target's type from them |
+| `src/blocks/message.*` | the StructBuilders' messages: their layout, and filling a target's type from them |
 | `src/mirror/mirror.*` | the Mirror block's thread: browse, create the variables, then the event loop |
 | `src/mirror/sampler.*` | the slow and fast GDS subscriptions and the sample budget |
 | `src/mirror/sync.*` | keeps the PLC and the mesh agreeing on values and forces |
@@ -49,12 +49,18 @@ changes nothing and the block tries again next cycle. So a PLC task never waits 
 
 ## Messages
 
-`Msg1` to `Msg10` are functions with a fixed count of named pins, since Engineer never leaves a
-function input unconnected and an extensible function cannot pass a struct between its steps.
+`StructBuilder1` to `StructBuilder10` are functions with a fixed count of named pins, since
+Engineer never leaves a function input unconnected and an extensible function cannot pass a
+struct between its steps.
 Each returns the struct `Message`: a header, its first fault, and 1024 bytes of entries, each a
 field name, its value's eCLR type and the value. A receiving block tells it from any other value
 by its type, `Rant.Message`, and its `TypeName` pin names the type it goes out as. A pin left
 unconnected on a RemoteFunction or RemoteTask is a message with no fields.
+
+- A builder given another builder's message copies its entries with the field name in front.
+  One given a struct variable walks its type in C#, since only managed code reads the type
+  metadata: `MsgPath` names each member level, kept per thread in its Rant spelling, and
+  `MsgLeaf` adds each member that holds a value under the joined path.
 
 - The task copies the message out under the entity's lock and compares it with the last, as
   a value is compared. The node thread fills the target's type with it by field path.

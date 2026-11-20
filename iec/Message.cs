@@ -23,7 +23,7 @@ namespace Rant
         public const int UB = 1107;
     }
 
-    // What a Msg block returns: field names and their values, for a Value or Request pin.
+    // What a StructBuilder returns: field names and their values, for a Value or Request pin.
     [Structure]
     public struct Message
     {

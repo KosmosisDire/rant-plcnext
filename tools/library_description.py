@@ -19,7 +19,7 @@ BLOCKS = {
     "FunctionDefinition": "Functions", "RemoteFunction": "Functions",
     "VariableDefinition": "Variables", "VariableReader": "Variables", "VariableWriter": "Variables",
     "TaskDefinition": "Tasks", "RemoteTask": "Tasks",
-    **{f"Msg{n}": "Messages" for n in range(1, 11)},
+    **{f"StructBuilder{n}": "StructBuilder" for n in range(1, 11)},
     "Mirror": "Mirror",
 }
 

@@ -8,7 +8,7 @@ using Iec61131.Engineering.Prototypes.Variables;
 
 namespace Rant
 {
-    // Runs the task Name with Request on a rising Execute, which takes a Msg block's message as
+    // Runs the task Name with Request on a rising Execute, which takes a StructBuilder's message as
     // RemoteFunction does. Progress is written as it comes while Busy, and Cancel asks the provider
     // to stop. Done or Error holds the outcome, with Response written, until Execute falls.
     [FunctionBlock]

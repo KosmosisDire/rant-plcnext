@@ -26,6 +26,8 @@ node = rant.Node("plc_test_pc", domain=0)
 deadline = time.time() + 180
 while time.time() < deadline and not any(p.active and p.name == "plc_test" for p in node.reflection.peers()):
     time.sleep(0.2)
+# What the PLC builds from a MotorCmd variable, whose motorSpeed is motor_speed here.
+DRIVE = "Motor { motor_speed: f64, enabled: bool } Drive { motor: Motor, label: string }"
 for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("RantTest/Text", "string"),
                      ("RantTest/PoseSeen", Pose), ("RantTest/TextSeen", "string"),
                      ("RantTest/RemoteResult", Double3), ("RantTest/PcModeSeen", "i32"),
@@ -43,6 +45,7 @@ for name, schema in [("RantTest/Cycles", "i32"), ("RantTest/Pose", Pose), ("Rant
                      ("RantTest/MsgFnSeen", Double3), ("RantTest/MsgStd", Double3), ("RantTest/Lit", "i32"),
                      ("RantTest/EmptyFnSeen", "i32"), ("RantTest/MsgFnDefault", Double3),
                      ("RantTest/BareCallDone", "bool"), ("RantTest/BareTaskDone", "bool"),
+                     ("RantTest/NestPose", Pose), ("RantTest/StructPose", Pose), ("RantTest/StructDrive", DRIVE),
                      ("RantTest/NoneText", "string")]:
     node.subscriber(name, schema, keep(name), reliable=True, catch_up=1)
 
@@ -280,7 +283,7 @@ check("VariableReader of a string field follows the owner", labels[-1:] == ["pum
 gauge.set({"id": 4, "label": "pump", "level": 7.0})
 time.sleep(1.5)
 g = gauge.get()
-check("VariableWriter with Msg writes its two fields in one write",
+check("VariableWriter with StructBuilder writes its two fields in one write",
       g is not None and g["level"] == 9.5 and g["label"] == "msg" and g["id"] == 4, g)
 
 # Msg: messages the PLC builds by field name, sent as the type their target has.
@@ -295,17 +298,26 @@ with lock:
     default = list(seen.get("RantTest/MsgFnDefault", []))
     bare_call = list(seen.get("RantTest/BareCallDone", []))
     bare_task = list(seen.get("RantTest/BareTaskDone", []))
+    nest = (seen.get("RantTest/NestPose") or [None])[-1]
+    spose = (seen.get("RantTest/StructPose") or [None])[-1]
+    drive = (seen.get("RantTest/StructDrive") or [None])[-1]
     lit = list(seen.get("RantTest/Lit", []))
     none = list(seen.get("RantTest/NoneText", []))
-check("Msg into a Publisher, as the reader's type", last is not None and last["enabled"] is True and last["mode"] == 7
+check("StructBuilder into a Publisher, as the reader's type", last is not None and last["enabled"] is True and last["mode"] == 7
       and last["label"] == "from Msg" and last["count"] == 0 and 0 <= last["speed"] < 25, last)
 check("TypeName names one of a topic's two types", two is not None and two["x"] == 1.5 and two["y"] == 2.5, two)
-check("Msg into a topic of two types without a name sets Error", any("2 types" in t for t in amb), amb[-1:])
+check("StructBuilder into a topic of two types without a name sets Error", any("2 types" in t for t in amb), amb[-1:])
 check("TypeName names a standard type", std is not None and std.x == 1.0 and std.z == 3.0, std)
-check("Msg with a value for a field name sets Error", any("Field1 wants a field name" in t for t in bad), bad[-1:])
-check("Msg as a RemoteFunction's request", any(r.x == 7.0 and r.z == 3.0 for r in fn), fn[-1:])
+check("StructBuilder with a value for a field name sets Error", any("Field1 wants a field name" in t for t in bad), bad[-1:])
+check("StructBuilder as a RemoteFunction's request", any(r.x == 7.0 and r.z == 3.0 for r in fn), fn[-1:])
 check("No Request calls a function of Empty", 42 in empty, empty[-1:])
 check("No Response: the call is Done, beside a call that takes the answer", True in bare_call and 42 in empty, bare_call[-3:])
+check("A StructBuilder as a value nests its fields", nest is not None and nest.position.x == 1.5
+      and nest.position.z == 3.0 and nest.orientation.w == 1.0, nest)
+check("A struct variable as a value gives its members", spose is not None and (spose.position.x, spose.position.y,
+      spose.position.z) == (4.0, 5.0, 6.0), spose)
+check("A user struct's members land by their Rant names", drive is not None and drive["motor"]["motor_speed"] == 2.5
+      and drive["motor"]["enabled"] is True and drive["label"] == "drive", drive)
 check("No Progress or Response: the task is Done", True in bare_task and 2.0 in quick_calls, (bare_task[-3:], quick_calls[-3:]))
 check("No Request sends the function's type at its defaults",
       any(r.x == 0.0 and r.y == 0.0 and r.z == 0.0 for r in default) and not any(r.x == 7.0 for r in default), default[-3:])

@@ -169,26 +169,11 @@ void Begin(uint8_t* m)
     std::memset(m, 0, ENTRIES_AT);
 }
 
-void Add(uint8_t* m, int index, Item field, Item value)
+namespace {
+
+// Writes one entry, its value already as an entry keeps it.
+void Put(uint8_t* m, const char* name, size_t n, uint32_t type, const uint8_t* bytes, size_t length)
 {
-    char why[FAULT_BYTES + 1];
-    const char* name = nullptr;
-    size_t n = 0;
-    if (!Text(field, name, n)) {
-        std::snprintf(why, sizeof why, "Field%d wants a field name in a STRING", index);
-        return Fault(m, why);
-    }
-    if (n == 0 || n > NAME_BYTES) {
-        std::snprintf(why, sizeof why, "Field%d is empty or over 64 bytes", index);
-        return Fault(m, why);
-    }
-    const uint8_t* bytes = value.data;
-    size_t length = value.data ? value.length : 0;
-    if (FlagsOf(value.type) & FLAG_STRING) {
-        const char* chars = nullptr;
-        Text(value, chars, length);
-        bytes = reinterpret_cast<const uint8_t*>(chars);
-    }
     const uint16_t used = Used(m);
     const size_t need = 1 + n + 4 + 4 + length;
     if (used + need > ENTRY_BYTES) return Fault(m, "the message is over 1024 bytes");
@@ -197,11 +182,142 @@ void Add(uint8_t* m, int index, Item field, Item value)
     std::memcpy(p, name, n);
     p += n;
     const uint32_t size = static_cast<uint32_t>(length);
-    std::memcpy(p, &value.type, 4);
+    std::memcpy(p, &type, 4);
     std::memcpy(p + 4, &size, 4);
     if (length) std::memcpy(p + 8, bytes, length);
     const uint16_t now = static_cast<uint16_t>(used + need);
     std::memcpy(m + USED_AT, &now, 2);
+}
+
+// A value's bytes as an entry keeps them: a string's characters without its header.
+void EntryBytes(const Item& value, const uint8_t*& bytes, size_t& length)
+{
+    bytes = value.data;
+    length = value.data ? value.length : 0;
+    if (FlagsOf(value.type) & FLAG_STRING) {
+        const char* chars = nullptr;
+        Text(value, chars, length);
+        bytes = reinterpret_cast<const uint8_t*>(chars);
+    }
+}
+
+// The Field of pair index, empty only where the fields of a message or struct go to the top.
+bool FieldName(uint8_t* m, int index, const Item& field, bool emptyOk, const char*& name, size_t& n)
+{
+    char why[FAULT_BYTES + 1];
+    if (!Text(field, name, n)) {
+        std::snprintf(why, sizeof why, "Field%d wants a field name in a STRING", index);
+        Fault(m, why);
+        return false;
+    }
+    if ((n == 0 && !emptyOk) || n > NAME_BYTES) {
+        std::snprintf(why, sizeof why, "Field%d is empty or over 64 bytes", index);
+        Fault(m, why);
+        return false;
+    }
+    return true;
+}
+
+// Appends part to the path in out of length n, after a dot unless it starts an index.
+bool Join(char (&out)[NAME_BYTES], size_t& n, const char* part, size_t length)
+{
+    const bool dot = n > 0 && part[0] != '[';
+    if (n + dot + length > NAME_BYTES) return false;
+    if (dot) out[n++] = '.';
+    std::memcpy(out + n, part, length);
+    n += length;
+    return true;
+}
+
+// The member names of a struct value down to the one being added, each spelled as Rant spells
+// fields. The task's own, since a StructBuilder runs on its task's thread start to end.
+constexpr int DEPTH_MAX = 8;
+thread_local char t_members[DEPTH_MAX][NAME_BYTES];
+thread_local size_t t_memberLength[DEPTH_MAX];
+
+} // namespace
+
+void Add(uint8_t* m, int index, Item field, Item value)
+{
+    const char* name = nullptr;
+    size_t n = 0;
+    if (!FieldName(m, index, field, false, name, n)) return;
+    const uint8_t* bytes = nullptr;
+    size_t length = 0;
+    EntryBytes(value, bytes, length);
+    Put(m, name, n, value.type, bytes, length);
+}
+
+void Nest(uint8_t* m, int index, Item field, const uint8_t* inner, size_t length)
+{
+    char why[FAULT_BYTES + 1];
+    const char* prefix = nullptr;
+    size_t n = 0;
+    if (!FieldName(m, index, field, true, prefix, n)) return;
+    if (length != MESSAGE_BYTES) return Fault(m, "a StructBuilder was given a struct of another size");
+    if (inner[FAULT_LENGTH_AT]) {
+        std::snprintf(why, sizeof why, "Value%d: %.*s", index, static_cast<int>(inner[FAULT_LENGTH_AT]),
+                      reinterpret_cast<const char*>(inner + FAULT_AT));
+        return Fault(m, why);
+    }
+    const uint8_t* entries = inner + ENTRIES_AT;
+    const size_t used = Used(inner);
+    for (size_t at = 0; at < used;) {
+        const uint8_t* p = entries + at;
+        const size_t nameLength = p[0];
+        uint32_t type = 0, size = 0;
+        if (at + 9 + nameLength > used) break;
+        std::memcpy(&type, p + 1 + nameLength, 4);
+        std::memcpy(&size, p + 5 + nameLength, 4);
+        if (at + 9 + nameLength + size > used) break;
+        char path[NAME_BYTES];
+        size_t pathLength = 0;
+        if (!Join(path, pathLength, prefix, n) || !Join(path, pathLength, reinterpret_cast<const char*>(p + 1), nameLength)) {
+            std::snprintf(why, sizeof why, "Field%d makes a path over 64 bytes", index);
+            return Fault(m, why);
+        }
+        Put(m, path, pathLength, type, p + 9 + nameLength, size);
+        at += 9 + nameLength + size;
+    }
+}
+
+void Path(int depth, const char* member)
+{
+    if (depth < 0 || depth >= DEPTH_MAX || !member) return;
+    // An IEC member name as a Rant field name, as plc::SanitizeDslName spells it.
+    char raw[NAME_BYTES + 2];
+    size_t n = 0;
+    if (member[0] >= '0' && member[0] <= '9') raw[n++] = 'f';
+    for (const char* c = member; *c && n < NAME_BYTES; ++c) {
+        const bool ok = (*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '_';
+        raw[n++] = ok ? *c : '_';
+    }
+    raw[n] = '\0';
+    t_memberLength[depth] = rant::detail::rant_field_name(raw, t_members[depth], NAME_BYTES);
+}
+
+void Leaf(uint8_t* m, int index, Item field, int depth, Item value)
+{
+    char why[FAULT_BYTES + 1];
+    const char* prefix = nullptr;
+    size_t n = 0;
+    if (!FieldName(m, index, field, true, prefix, n)) return;
+    if (depth > DEPTH_MAX) {
+        std::snprintf(why, sizeof why, "Value%d nests structs deeper than %d", index, DEPTH_MAX);
+        return Fault(m, why);
+    }
+    char path[NAME_BYTES];
+    size_t pathLength = 0;
+    bool fits = Join(path, pathLength, prefix, n);
+    for (int i = 0; fits && i < depth; ++i) fits = t_memberLength[i] && Join(path, pathLength, t_members[i], t_memberLength[i]);
+    if (!fits) {
+        std::snprintf(why, sizeof why, "Field%d makes a path over 64 bytes", index);
+        return Fault(m, why);
+    }
+    const uint8_t* bytes = nullptr;
+    size_t length = 0;
+    EntryBytes(value, bytes, length);
+    Put(m, path, pathLength, value.type, bytes, length);
 }
 
 void Read(const uint8_t* m, size_t length, const char* type, size_t typeLength, Message& out)

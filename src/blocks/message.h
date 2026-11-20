@@ -1,5 +1,5 @@
 #pragma once
-// Messages the Msg blocks build: field names and the values the program gave them, written into
+// Messages the StructBuilders build: field names and the values the program gave them, written into
 // the Message struct the block returns, so a PLC cycle allocates nothing. A block's Value or
 // Request pin reads one, and its TypeName pin names the type it goes out as.
 
@@ -11,7 +11,7 @@
 
 namespace blocks::msg {
 
-// One input of a Msg block: its memory and its type as iec/Msg.cs packs it, the eCLR type code in
+// One input of a StructBuilder: its memory and its type as iec/Msg.cs packs it, the eCLR type code in
 // the low byte, the Kind flags in the next, and an array's element size above them.
 struct Item {
     const uint8_t* data = nullptr;
@@ -28,6 +28,12 @@ bool IsMessageType(const char* space, const char* type);
 // Empties the message at m, then adds the index'th field name and its value to it.
 void Begin(uint8_t* m);
 void Add(uint8_t* m, int index, Item field, Item value);
+// A builder's message inner as a value: its fields under field's name, or at the top for ''.
+void Nest(uint8_t* m, int index, Item field, const uint8_t* inner, size_t length);
+// A struct variable as a value, walked by iec/StructBuilder.cs: Path names its member at depth,
+// and Leaf adds a member holding a value under field's name and the depth members above it.
+void Path(int depth, const char* member);
+void Leaf(uint8_t* m, int index, Item field, int depth, Item value);
 
 // A message copied out of its struct.
 struct Message {

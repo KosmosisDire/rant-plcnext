@@ -1,6 +1,6 @@
 ---
 name: plcnext
-description: Writing PLCnext Engineer programs in Structured Text with the library Rant: function blocks that publish, subscribe, offer and call functions and tasks, share variables, log and raise status on the Rant mesh, messages built by field name with Msg1 to Msg10, Rant's standard types as IEC types, and Rant Math's IEC functions. Use when a PLC program should talk to Rant nodes or use Rant's types or math.
+description: Writing PLCnext Engineer programs in Structured Text with the library Rant: function blocks that publish, subscribe, offer and call functions and tasks, share variables, log and raise status on the Rant mesh, structs built by field name with StructBuilder1 to StructBuilder10, Rant's standard types as IEC types, and Rant Math's IEC functions. Use when a PLC program should talk to Rant nodes or use Rant's types or math.
 ---
 
 # Rant PLCnext
@@ -98,17 +98,24 @@ move(Name := 'Cell/Move', Request := goal_pose, Progress := at, Response := at,
 
 ## Messages without declared types
 
-`Msg1` to `Msg10` build a message from that many field names and values, so a program sends a
-type it never declares. Wire the result into `Value` or `Request`.
+`StructBuilder1` to `StructBuilder10` build a struct from that many field names and values, so a
+program sends a type it never declares. Wire the result into `Value` or `Request`.
 
 ```
-cmd(Topic := 'Conveyor/Cmd', Value := Msg3('speed', speed, 'enabled', run, 'mode', 'Auto'));
-call(Name := 'Gp12/SetServo', Execute := go, Request := Msg1('on', TRUE));
+cmd(Topic := 'Conveyor/Cmd', Value := StructBuilder3('speed', speed, 'enabled', run, 'mode', 'Auto'));
+call(Name := 'Gp12/SetServo', Execute := go, Request := StructBuilder1('on', TRUE));
+at := StructBuilder2('x', x, 'y', y);   (* at : Message *)
+goal(Topic := 'Cell/Goal', Value := StructBuilder2('position', at, 'orientation', heading));
 ```
 
 - Pins go `Field1`, `Value1`, `Field2`, `Value2` and on. ST calls functions only in order,
   without pin names, and every pin must be connected. A path reaches inside: `'position.x'`,
   `'pts[1]'`. Fields left out keep their defaults.
+- A value may be another StructBuilder or a struct variable such as a `Quaternion`: its fields go
+  under the field name, a struct's members by their Rant names. An empty field name puts them at
+  the top, which also takes more than ten fields.
+- An inner StructBuilder goes through a `Message` variable first: Engineer passes no function's
+  struct result straight into another function (E3013), in ST or FBD.
 - The message goes out as the target's own type: the owner's type of a function, task or
   variable, or the one type a topic's readers have. A topic with several types needs the
   sending block's `TypeName`, which also takes a standard type such as `'Pose'`. A

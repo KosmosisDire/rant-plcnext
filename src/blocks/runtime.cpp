@@ -105,7 +105,7 @@ struct Record {
 
     bool                 unlogged = false; // error holds a reason the node thread has not logged yet
 
-    // A Msg block's message in place of the value or request, under mu: the type TypeName names,
+    // A StructBuilder's message in place of the value or request, under mu: the type TypeName names,
     // empty for the target's own, and the message the node thread sends next.
     bool                 viaMessage = false;
     std::string          messageType;
@@ -1131,7 +1131,7 @@ void Run()
             try {
                 rant::NodeOptions o;
                 o.domain = static_cast<uint16_t>(domain);
-                // Every peer's names and types, so a Msg block's message finds its target's type.
+                // Every peer's names and types, so a StructBuilder's message finds its target's type.
                 o.fetch_details = true;
                 slots = SlotsGranted(list.size(), mirrorSlots);
                 o.max_topics = static_cast<uint16_t>(slots);
