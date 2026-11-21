@@ -32,7 +32,7 @@ int main(int argc, char** argv)
     node->on_event([](const rant::Event& e) { std::fprintf(stderr, "event: %s\n", e.to_string().c_str()); });
     node->on_log([](const rant::LogLine& l) {
         std::printf("  [%.*s/%u%s] %.*s\n", static_cast<int>(l.node.size()), l.node.data(), l.node_id,
-                    l.level == rant::Level::Error ? " ERROR" : "",
+                    l.level == rant::DiagnosticLevel::Error ? " ERROR" : "",
                     static_cast<int>(l.text.size()), l.text.data());
     });
     rant::Reflection mesh = node->reflection();

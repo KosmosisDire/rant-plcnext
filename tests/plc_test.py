@@ -388,7 +388,7 @@ time.sleep(1.0)
 log_go.set(False)
 time.sleep(0.5)
 ours = [l for l in plc_logs if l.text == "hello from the PLC log"]
-check("Log, a rising Execute sends one line", len(ours) == 1 and ours[0].level == rant.Level.WARN,
+check("Log, a rising Execute sends one line", len(ours) == 1 and ours[0].level == rant.DiagnosticLevel.WARN,
       [(l.level, l.text) for l in plc_logs[-3:]])
 collisions = [l.text for l in plc_logs if "name-collision" in l.text]
 check("Blocks calling one function share its handle", not collisions, collisions[:2])
@@ -397,7 +397,7 @@ check("Blocks calling one function share its handle", not collisions, collisions
 status_on.set(True)
 time.sleep(1.5)
 raised = [c for c in plc_status.get("conditions", []) if c.key == "test_alarm"]
-check("Status, Active raises the condition", len(raised) == 1 and raised[0].level == rant.Level.ERROR
+check("Status, Active raises the condition", len(raised) == 1 and raised[0].level == rant.DiagnosticLevel.ERROR
       and raised[0].clearable and raised[0].text == "test alarm", raised)
 # the PLC counts clears across runs, so this run's clear is one more than before it
 with lock:

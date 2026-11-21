@@ -14,11 +14,11 @@ namespace {
 // A logger holds the node while it logs, so a close on the node thread never frees it under the call.
 std::mutex                  s_mutex;
 std::shared_ptr<rant::Node> s_node;
-std::vector<std::pair<rant::Level, std::string>> s_pending;
+std::vector<std::pair<rant::DiagnosticLevel, std::string>> s_pending;
 // Lines kept while no node is open, the newest dropped past it so a node that never opens costs no more.
 constexpr size_t PENDING_MAX = 256;
 
-void Emit(rant::Level level, const std::string& message)
+void Emit(rant::DiagnosticLevel level, const std::string& message)
 {
     std::shared_ptr<rant::Node> node;
     {
@@ -34,15 +34,15 @@ void Emit(rant::Level level, const std::string& message)
 
 } // namespace
 
-void Info(const std::string& message)  { Emit(rant::Level::Info, message); }
-void Error(const std::string& message) { Emit(rant::Level::Error, message); }
+void Info(const std::string& message)  { Emit(rant::DiagnosticLevel::Info, message); }
+void Error(const std::string& message) { Emit(rant::DiagnosticLevel::Error, message); }
 
 void ArpInfo(const std::string& message)  { Arp::Base::Commons::Logging::Log::Info("Rant: {0}", message.c_str()); }
 void ArpError(const std::string& message) { Arp::Base::Commons::Logging::Log::Error("Rant: {0}", message.c_str()); }
 
 void Attach(const std::shared_ptr<rant::Node>& node)
 {
-    std::vector<std::pair<rant::Level, std::string>> pending;
+    std::vector<std::pair<rant::DiagnosticLevel, std::string>> pending;
     {
         std::lock_guard<std::mutex> lock(s_mutex);
         s_node = node;

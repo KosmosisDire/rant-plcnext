@@ -961,7 +961,7 @@ struct StatusRecord : Record {
         }
         rant::SendStatus st = rant::SendStatus::Ok;
         if (want) {
-            st = node->set_status(name, static_cast<rant::Level>(at), std::string_view(t, length), canClear);
+            st = node->set_status(name, static_cast<rant::DiagnosticLevel>(at), std::string_view(t, length), canClear);
             raised = st == rant::SendStatus::Ok;
         } else if (raised) {
             node->clear_status(name);
@@ -1187,7 +1187,7 @@ void Run()
                     s.logHead = (s.logHead + 1) % LOG_LINES;
                     --s.logCount;
                 }
-                node->log(static_cast<rant::Level>(line.level), std::string_view(line.text, line.length));
+                node->log(static_cast<rant::DiagnosticLevel>(line.level), std::string_view(line.text, line.length));
             }
             {
                 std::vector<std::string> cleared;
