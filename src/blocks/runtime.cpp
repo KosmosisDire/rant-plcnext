@@ -275,7 +275,7 @@ void ClearError(Record& e)
     if (!e.error.empty()) e.error.clear();
 }
 
-std::string Status(const char* what, rant::SendStatus st)
+std::string Status(const char* what, rant::RantResult st)
 {
     return std::string(what) + ", status " + std::to_string(static_cast<int>(st));
 }
@@ -463,15 +463,15 @@ struct PublisherRecord : Record {
             Fail(*this, why);
             return;
         }
-        const rant::SendStatus st = Writes() ? writer->set(View(sendBuf)) : pub->send(View(sendBuf));
-        if (st == rant::SendStatus::Ok) {
+        const rant::RantResult st = Writes() ? writer->set(View(sendBuf)) : pub->send(View(sendBuf));
+        if (st == rant::RantResult::Ok) {
             std::lock_guard<std::mutex> g(mu);
             ++count;
             error.clear();
-        } else if (st == rant::SendStatus::NoTopic && Writes()) {
+        } else if (st == rant::RantResult::NoTopic && Writes()) {
             // A write the owner cannot get is not kept for later, since it would land stale.
             Fail(*this, "no owner of " + name + ", the write was not applied");
-        } else if (st == rant::SendStatus::NoTopic) {
+        } else if (st == rant::RantResult::NoTopic) {
             // The value found no topic, so the block sends it again.
             std::lock_guard<std::mutex> g(mu);
             resend = true;
@@ -572,12 +572,12 @@ struct VariableRecord : Record {
             // A mesh value that came before this set is older than it.
             fresh = false;
         }
-        const rant::SendStatus st = var->set(View(sendBuf));
+        const rant::RantResult st = var->set(View(sendBuf));
         {
             std::lock_guard<std::mutex> g(mu);
             if (send == Send::Sending) send = Send::Idle;
         }
-        if (st == rant::SendStatus::Ok) ClearError(*this);
+        if (st == rant::RantResult::Ok) ClearError(*this);
         else Fail(*this, Status("a write was refused", st));
     }
     void Drop(const char*) override
@@ -862,7 +862,7 @@ struct CallRecord : Record {
             step = Step::Failed;
             return;
         }
-        rant::SendStatus st;
+        rant::RantResult st;
         // An answer reaches this block only while it still uses the handle, which it leaves before it is freed.
         const std::weak_ptr<SharedCall> via = calls;
         const uint64_t n = callNumber;
@@ -889,7 +889,7 @@ struct CallRecord : Record {
             callId = call.id;
             st = call.status;
         }
-        if (st != rant::SendStatus::Ok) {
+        if (st != rant::RantResult::Ok) {
             std::string why = Status("the call was refused", st);
             std::lock_guard<std::mutex> g(mu);
             fault = std::move(why);
@@ -959,15 +959,15 @@ struct StatusRecord : Record {
             length = textLength;
             std::memcpy(t, text, length);
         }
-        rant::SendStatus st = rant::SendStatus::Ok;
+        rant::RantResult st = rant::RantResult::Ok;
         if (want) {
             st = node->set_status(name, static_cast<rant::DiagnosticLevel>(at), std::string_view(t, length), canClear);
-            raised = st == rant::SendStatus::Ok;
+            raised = st == rant::RantResult::Ok;
         } else if (raised) {
             node->clear_status(name);
             raised = false;
         }
-        if (st == rant::SendStatus::Ok) ClearError(*this);
+        if (st == rant::RantResult::Ok) ClearError(*this);
         else Fail(*this, Status("the condition was refused", st));
     }
     void Drop(const char*) override

@@ -8,7 +8,7 @@ namespace Rant
 {
     // How much a log line or a status condition matters, with Rant's own numbers.
     [Enumeration]
-    public enum Level : byte
+    public enum DiagnosticLevel : byte
     {
         Debug = 1,
         Info = 2,

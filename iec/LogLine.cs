@@ -15,7 +15,7 @@ namespace Rant
         [Input]
         public bool Execute;
         [Input]
-        public Level Level;
+        public DiagnosticLevel Level;
         [Input, DataType("STRING")]
         public IecString80 Text;
         [Output, DataType("DINT")]
@@ -33,7 +33,7 @@ namespace Rant
         {
             Text.ctor();
             ErrorText.ctor();
-            Level = Level.Info;
+            Level = DiagnosticLevel.Info;
         }
 
         [Execution]

@@ -78,8 +78,8 @@ node(Name := 'plc_cell');
 cup(Topic := 'Cell/CupFull', Value := cup_full);
 goal(Topic := 'Cell/Target', Value := target);
 chirp(Name := 'Cell/Chirp', Request := nothing, Response := nothing);
-trip_log(Execute := drive_tripped, Level := Level#Warn, Text := 'drive 2 tripped');
-drive_fault(Key := 'drive2', Active := drive_tripped, Level := Level#Error,
+trip_log(Execute := drive_tripped, Level := DiagnosticLevel#Warn, Text := 'drive 2 tripped');
+drive_fault(Key := 'drive2', Active := drive_tripped, Level := DiagnosticLevel#Error,
             Text := 'drive 2 tripped', Clearable := TRUE);
 END_PROGRAM
 ```
@@ -144,7 +144,7 @@ goal(Topic := 'Cell/Goal', Value := StructBuilder2('position', at, 'orientation'
 - An array of scalars is a list. A 2D array in your code is an array of arrays:
   `ARRAY[0..1] OF ARRAY[0..2] OF INT`, index it `grid[1][2]`. Arrays of structs, strings or enums do not
   reach the mesh yet.
-- `Level` is `Level#Debug`, `Level#Info`, `Level#Warn` or `Level#Error`.
+- `Level` is `DiagnosticLevel#Debug`, `DiagnosticLevel#Info`, `DiagnosticLevel#Warn` or `DiagnosticLevel#Error`.
 
 ## Math
 

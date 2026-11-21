@@ -267,11 +267,11 @@ seen_switch(Topic := STRING#'RantTest/SwitchText', Value := switch_text);
 
 (* Log: one line on each rising edge of the PC's LogGo. *)
 log_go_def(Name := STRING#'RantTest/LogGo', Value := log_go);
-log_line(Execute := log_go, Level := Level#Warn, Text := STRING#'hello from the PLC log');
+log_line(Execute := log_go, Level := DiagnosticLevel#Warn, Text := STRING#'hello from the PLC log');
 
 (* Status: a clearable condition raised while the PC's StatusOn holds. *)
 status_on_def(Name := STRING#'RantTest/StatusOn', Value := status_on);
-alarm(Key := STRING#'test_alarm', Active := status_on, Level := Level#Error, Text := STRING#'test alarm',
+alarm(Key := STRING#'test_alarm', Active := status_on, Level := DiagnosticLevel#Error, Text := STRING#'test alarm',
       Clearable := TRUE);
 IF alarm.Cleared THEN
     alarm_cleared := alarm_cleared + DINT#1;

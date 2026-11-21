@@ -130,7 +130,7 @@ message or nothing as RemoteFunction does. `Progress` is written as it comes whi
 
 Sends `Text` as a log line of the node at `Level`, on each rising `Execute`.
 
-- `Execute : BOOL`, `Level : Level` (`Level#Info` by default), `Text : STRING`
+- `Execute : BOOL`, `Level : DiagnosticLevel` (`DiagnosticLevel#Info` by default), `Text : STRING`
 - `Count : DINT` sent, `Error`, `ErrorText`
 
 ## Status
@@ -140,11 +140,11 @@ after. A `Clearable` one may be cleared from another node, such as an HMI: it st
 `Active` goes FALSE, and `Cleared` is set for the cycle the clear arrives.
 
 ```
-drive_fault(Key := 'drive2', Active := drive_tripped, Level := Level#Error,
+drive_fault(Key := 'drive2', Active := drive_tripped, Level := DiagnosticLevel#Error,
             Text := 'drive 2 tripped', Clearable := TRUE);
 ```
 
-- `Key : STRING`, `Active : BOOL`, `Level : Level` (`Level#Warn` by default), `Text : STRING`, `Clearable : BOOL`
+- `Key : STRING`, `Active : BOOL`, `Level : DiagnosticLevel` (`DiagnosticLevel#Warn` by default), `Text : STRING`, `Clearable : BOOL`
 - `Cleared : BOOL`, `Error`, `ErrorText`
 
 `Level` is `Debug`, `Info`, `Warn` or `Error`.
