@@ -12,7 +12,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/get_cpm.cmake")
 set(CPM_rant_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../rant" CACHE PATH "Rant's source tree")
 CPMAddPackage(NAME rant
   GITHUB_REPOSITORY KosmosisDire/Rant
-  VERSION 0.0.45
+  VERSION 0.0.46
   EXCLUDE_FROM_ALL YES)
 
 # Rant Math from the sibling checkout, which also holds the IEC functions the C# part takes.
@@ -21,7 +21,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CPM_math_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../math-rant" CACHE PATH "Rant Math's source tree")
 CPMAddPackage(NAME math
   GITHUB_REPOSITORY KosmosisDire/rant-math
-  VERSION 0.0.6
+  VERSION 0.0.7
   EXCLUDE_FROM_ALL YES)
 
 # The eCLR glue plcncli generates from the C# blocks, the blocks and the mirror in src/.
